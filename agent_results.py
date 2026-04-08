@@ -47,8 +47,15 @@ def _register_fonts():
             return "Arial", "Arial-Bold"
         except Exception:
             pass
-    # Пробуємо DejaVu
-    for folder in [os.path.dirname(__file__), win_fonts]:
+    # Пробуємо DejaVu — перевіряємо кілька відомих розташувань (Windows, Linux, поруч зі скриптом)
+    dejavu_search = [
+        os.path.dirname(__file__),
+        win_fonts,
+        "/usr/share/fonts/truetype/dejavu",          # Debian/Ubuntu/Streamlit Cloud
+        "/usr/share/fonts/dejavu",
+        "/usr/share/fonts/TTF",
+    ]
+    for folder in dejavu_search:
         r = os.path.join(folder, "DejaVuSans.ttf")
         b = os.path.join(folder, "DejaVuSans-Bold.ttf")
         if os.path.exists(r) and os.path.exists(b):

@@ -96,6 +96,10 @@ if run_btn and uploaded:
                 st.write(f"   ✅ {len(rows)} рядків"
                          + (f" | ⚠️ без оцінки: {no_score}" if no_score else "")
                          + (f" | ⚠️ без ID: {no_id}" if no_id else ""))
+                if rows and no_score == len(rows):
+                    st.warning(f"   ⛔ Файл **{uploaded_file.name}**: всі рядки без оцінки (Laureate порожній). "
+                               "Схоже, завантажено вихідний файл до оцінювання. "
+                               "Завантажте файл **після** роботи агента журі.")
             except Exception as e:
                 errors.append(f"{uploaded_file.name}: {e}")
                 full_log.append(f"❌ {uploaded_file.name}: {e}")
@@ -106,7 +110,11 @@ if run_btn and uploaded:
             status.update(label="Помилка!", state="error")
             st.stop()
 
+        total_no_score = sum(1 for r in all_rows if r.get("raw_laureate") == "None")
         st.write(f"📊 Всього учасників: **{len(all_rows)}**")
+        if total_no_score / len(all_rows) > 0.8:
+            st.error(f"⛔ {total_no_score} з {len(all_rows)} учасників без оцінки ({total_no_score*100//len(all_rows)}%). "
+                     "Схоже, завантажено файли **до** оцінювання агентом журі. PDF буде некоректним.")
 
         # Генеруємо PDF
         st.write("📄 Генерую PDF...")

@@ -160,6 +160,24 @@ if run_btn and uploaded:
     # Учасники без оцінки (отримали 1st degree автоматично)
     no_score_rows = [r for r in all_rows if r.get("raw_laureate") == "None"]
 
+    # Можливі дублі: різний ID, однакові ПІБ + Назва роботи
+    from collections import defaultdict
+    _dup_key = {}  # (pib_norm, nazva_norm) -> list of rows
+    for r in all_rows:
+        pib_n   = r["pib"].strip().lower()
+        nazva_n = (r.get("nazva") or "").strip().lower()
+        key = (pib_n, nazva_n)
+        if key not in _dup_key:
+            _dup_key[key] = []
+        _dup_key[key].append(r)
+    # Тільки групи де >1 рядок
+    dup_groups = {k: v for k, v in _dup_key.items() if len(v) > 1}
+    # Розділяємо: конфлікт (різні laureate) і просто дублі (однакові laureate)
+    conflict_groups = {k: v for k, v in dup_groups.items()
+                       if len(set(r["laureate"] for r in v)) > 1}
+    same_groups     = {k: v for k, v in dup_groups.items()
+                       if len(set(r["laureate"] for r in v)) == 1}
+
     # Метрики
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Всього", len(all_rows))
@@ -170,6 +188,11 @@ if run_btn and uploaded:
     m6.metric("❓ Без оцінки→1st", len(no_score_rows),
               delta=f"-{len(no_score_rows)} перевір" if no_score_rows else None,
               delta_color="inverse")
+
+    if conflict_groups:
+        st.error(f"🚨 Знайдено **{len(conflict_groups)}** груп з РІЗНИМИ оцінками для однакового учасника+твору! Перевір вкладку «🚨 Конфлікти».")
+    elif dup_groups:
+        st.warning(f"⚠️ Знайдено **{len(dup_groups)}** дублікатів (різний ID, однакові ім'я+твір). Оцінки співпадають — перевір вкладку «🔁 Дублі».")
 
     # Кнопка скачати PDF
     safe_month = month.replace(" ", "_")
@@ -184,7 +207,7 @@ if run_btn and uploaded:
     st.divider()
 
     # Таблиця результатів
-    tabs = st.tabs(["📋 Всі результати", "⭐ Gran Pri", "❓ Без оцінки → 1st", "⚠️ Без ID", "📋 Лог"])
+    tabs = st.tabs(["📋 Всі результати", "⭐ Gran Pri", "🚨 Конфлікти", "🔁 Дублі", "❓ Без оцінки → 1st", "⚠️ Без ID", "📋 Лог"])
 
     import pandas as pd
     df = pd.DataFrame([{
@@ -221,7 +244,49 @@ if run_btn and uploaded:
         else:
             st.info("Жодного Gran Pri у цих файлах")
 
+    # --- Вкладка: Конфлікти (різні оцінки для однакового учасника+твору) ---
     with tabs[2]:
+        if not conflict_groups:
+            st.success("Конфліктів не знайдено ✅ — всі однакові учасники+твори мають однакову оцінку.")
+        else:
+            st.error(f"🚨 {len(conflict_groups)} груп з РІЗНИМИ оцінками для одного учасника/твору. Потрібне ручне рішення!")
+            for (pib_n, nazva_n), group in sorted(conflict_groups.items()):
+                lau_vals = ", ".join(set(r["laureate"] for r in group))
+                st.markdown(f"**{group[0]['pib']}** | *{group[0].get('nazva','') or '—'}*  →  оцінки: `{lau_vals}`")
+                g_df = pd.DataFrame([{
+                    "ID": r["id"] or "—", "ПІБ": r["pib"],
+                    "Номінація": r["nom"], "Назва": r.get("nazva",""),
+                    "Laureate": r["laureate"], "Файл журі": r["source"],
+                } for r in group])
+                st.dataframe(g_df.style.map(color_row, subset=["Laureate"]),
+                             use_container_width=True)
+                st.divider()
+            csv_c = pd.DataFrame([{
+                "ID": r["id"] or "—", "ПІБ": r["pib"], "Номінація": r["nom"],
+                "Назва": r.get("nazva",""), "Laureate": r["laureate"], "Файл": r["source"],
+            } for g in conflict_groups.values() for r in g]).to_csv(index=False).encode("utf-8-sig")
+            st.download_button("⬇️ CSV конфліктів", csv_c,
+                               f"конфлікти_{month.replace(' ','_')}.csv", "text/csv")
+
+    # --- Вкладка: Дублі (однакові оцінки — можна прибрати) ---
+    with tabs[3]:
+        if not same_groups:
+            st.success("Дублів не знайдено ✅")
+        else:
+            st.warning(f"🔁 {len(same_groups)} груп — різний ID, однакові ім'я+твір, **оцінки однакові**. "
+                       "Можливо, учасник подав заявку двічі. Можна залишити або прибрати один рядок.")
+            for (pib_n, nazva_n), group in sorted(same_groups.items()):
+                ids = " / ".join(str(r["id"]) for r in group)
+                st.markdown(f"**{group[0]['pib']}** | *{group[0].get('nazva','') or '—'}*  →  ID: `{ids}`  →  `{group[0]['laureate']}`")
+            st.divider()
+            csv_d = pd.DataFrame([{
+                "ID": r["id"] or "—", "ПІБ": r["pib"], "Номінація": r["nom"],
+                "Назва": r.get("nazva",""), "Laureate": r["laureate"], "Файл": r["source"],
+            } for g in same_groups.values() for r in g]).to_csv(index=False).encode("utf-8-sig")
+            st.download_button("⬇️ CSV дублів", csv_d,
+                               f"дублі_{month.replace(' ','_')}.csv", "text/csv")
+
+    with tabs[4]:
         if no_score_rows:
             st.warning(f"⚠️ {len(no_score_rows)} учасників не мали оцінки від журі → автоматично отримали **1st degree**. Перевір вручну.")
             no_score_df = pd.DataFrame([{
@@ -244,7 +309,7 @@ if run_btn and uploaded:
         else:
             st.success("Всі учасники мають оцінку від журі ✅")
 
-    with tabs[3]:
+    with tabs[5]:
         no_id_df = df[df["ID"] == "—"]
         if len(no_id_df):
             st.warning(f"{len(no_id_df)} учасників без Bitrix24 ID — запис у CRM неможливий")
@@ -252,7 +317,7 @@ if run_btn and uploaded:
         else:
             st.success("Всі учасники мають ID ✅")
 
-    with tabs[4]:
+    with tabs[6]:
         st.subheader("Лог читання файлів")
         st.caption("Детальна інформація про колонки, знайдені/відсутні дані")
         for line in full_log:

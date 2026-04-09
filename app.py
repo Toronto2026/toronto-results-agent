@@ -110,6 +110,22 @@ if run_btn and uploaded:
             status.update(label="Помилка!", state="error")
             st.stop()
 
+        # Дедуплікація по ID (захист від дублів між файлами журі)
+        seen_ids = {}
+        dedup_rows = []
+        dedup_count = 0
+        for r in all_rows:
+            rid = str(r["id"]).strip() if r["id"] else None
+            if rid and rid not in ("None", "—", ""):
+                if rid in seen_ids:
+                    dedup_count += 1
+                    continue
+                seen_ids[rid] = True
+            dedup_rows.append(r)
+        if dedup_count:
+            st.warning(f"⚠️ Видалено дублів по ID: **{dedup_count}** (один учасник у кількох файлах журі)")
+        all_rows = dedup_rows
+
         total_no_score = sum(1 for r in all_rows if r.get("raw_laureate") == "None")
         st.write(f"📊 Всього учасників: **{len(all_rows)}**")
         if total_no_score / len(all_rows) > 0.8:

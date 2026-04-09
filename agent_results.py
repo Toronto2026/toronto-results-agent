@@ -126,6 +126,10 @@ def convert_laureate(value) -> str:
     if re.search(r'\bii\b',  low) or re.search(r'іі',  low): return "2nd degree"
     if re.search(r'\bi\b',   low) or re.search(r'\bі\b', low): return "1st degree"
 
+    # Дипломант → 3d degree
+    if "дипломант" in low:
+        return "3d degree"
+
     # Все інше (нема, не відкрила, error, тощо) → 1st degree
     return "1st degree"
 

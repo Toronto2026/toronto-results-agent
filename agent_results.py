@@ -292,32 +292,45 @@ def read_all_jury(folder: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Генерація PDF — дизайн як у лютому 2026
+# Генерація PDF — чистий дизайн "легкий пошук"
 # ---------------------------------------------------------------------------
+import re as _re
 
-YELLOW       = colors.HexColor("#FFD700")   # жовтий фон рядків / заголовок
-BLUE_HEADER  = colors.HexColor("#1a237e")   # темно-синій заголовок таблиці
-WHITE        = colors.white
-
-# Кольори тільки клітинки Laureate
-LAUREATE_CELL_COLORS = {
-    "Gran Pri":   colors.HexColor("#FF6F00"),  # насичений помаранчевий — видно на жовтому
-    "1st degree": colors.HexColor("#B3E5FC"),  # блакитний
-    "2nd degree": YELLOW,                      # той самий жовтий (без виділення)
-    "3d degree":  colors.HexColor("#CE93D8"),  # ліловий
+# Кольори рядків по ступеню (пастельні — не втомлюють очі)
+ROW_COLORS = {
+    "Gran Pri":   colors.HexColor("#FFE082"),  # тепле золото
+    "1st degree": colors.HexColor("#DCEDC8"),  # світло-зелений
+    "2nd degree": colors.HexColor("#BBDEFB"),  # світло-блакитний
+    "3d degree":  colors.HexColor("#E1BEE7"),  # світло-ліловий
+}
+# Текст в клітинці Laureate (кольоровий жирний)
+LAU_TEXT_COLORS = {
+    "Gran Pri":   colors.HexColor("#E65100"),  # темно-помаранчевий
+    "1st degree": colors.HexColor("#2E7D32"),  # темно-зелений
+    "2nd degree": colors.HexColor("#1565C0"),  # темно-синій
+    "3d degree":  colors.HexColor("#6A1B9A"),  # темно-ліловий
 }
 
 HEADER_TEXT = (
     "Вітаємо всіх учасників фестивалю з чудовими результатами!\n"
     "Як користуватися таблицею?\n"
-    "Знаходимо у стовпчику Artist назву колективу або ПІБ учасника.\n"
-    "Сортування за алфавітом. Навпроти\n"
-    "ПІБ учасника ви бачите диплом лауреата від 3 до 1-ї або Гран Прі."
+    "Знаходимо у стовпчику ПІБ Учасника назву колективу або прізвище.\n"
+    "Сортування за алфавітом. Навпроти ПІБ учасника ви бачите диплом лауреата від 3 до 1-ї або Гран Прі."
 )
+
+def _clean_nazva(text: str) -> str:
+    """Прибирає URL з назви роботи — лишає тільки текст."""
+    if not text:
+        return ""
+    # видаляємо http/https посилання
+    text = _re.sub(r'https?://\S+', '', text).strip()
+    # видаляємо youtu.be/... та www.youtube.com/...
+    text = _re.sub(r'(?:youtu\.be|youtube\.com)\S*', '', text).strip()
+    return text.strip()
 
 
 def build_pdf(rows: list[dict], output_path: str, month: str, publish_date: str = ""):
-    """Генерує PDF таблицю результатів (дизайн лютий 2026)."""
+    """Генерує PDF таблицю результатів."""
     doc = SimpleDocTemplate(
         output_path,
         pagesize=A4,
@@ -325,102 +338,115 @@ def build_pdf(rows: list[dict], output_path: str, month: str, publish_date: str 
         topMargin=1.5*cm,  bottomMargin=1.5*cm,
     )
 
-    # --- Стилі тексту ---
-    cell_style = ParagraphStyle(
-        "cell", fontName=FONT_REGULAR, fontSize=8, leading=10, wordWrap="CJK",
-    )
-    bold_style = ParagraphStyle(
-        "bold", fontName=FONT_BOLD, fontSize=8, leading=10,
-    )
-    pib_style = ParagraphStyle(                          # ПІБ: жирний
-        "pib", fontName=FONT_BOLD, fontSize=8, leading=10, wordWrap="CJK",
-    )
-    header_instr_style = ParagraphStyle(                 # текст інструкції у жовтому блоці
-        "hdr_instr", fontName=FONT_BOLD, fontSize=9, leading=13,
-        alignment=1,                                     # по центру
-        textColor=colors.black,
-    )
+    # --- Стилі ---
+    cell_s = ParagraphStyle("cell", fontName=FONT_REGULAR, fontSize=8, leading=10, wordWrap="CJK")
+    pib_s  = ParagraphStyle("pib",  fontName=FONT_BOLD,    fontSize=9, leading=11, wordWrap="CJK")
+    hdr_s  = ParagraphStyle("hdr",  fontName=FONT_BOLD,    fontSize=8, leading=10,
+                             textColor=colors.white, alignment=1)
+    title_s = ParagraphStyle("title", fontName=FONT_BOLD,  fontSize=14, leading=17,
+                              textColor=colors.HexColor("#1a237e"), spaceAfter=4)
+    instr_s = ParagraphStyle("instr", fontName=FONT_REGULAR, fontSize=9, leading=13,
+                              textColor=colors.HexColor("#333333"))
 
     story = []
 
-    # --- Жовтий блок-заголовок (як у лютому) ---
+    # --- Назва ---
+    story.append(Paragraph(f"Результати фестивалю TORONTO — {month}", title_s))
+
+    # --- Інструкція ---
     instr = HEADER_TEXT
     if publish_date:
-        instr += f"\nПублікація онлайн дипломів запланована на {publish_date} на сайті\nhttps://toronto.org.ua/"
-    else:
-        instr += f"\nhttps://toronto.org.ua/"
-
-    instr_para = Paragraph(instr.replace("\n", "<br/>"), header_instr_style)
-    instr_table = Table([[instr_para]], colWidths=[18.4*cm])
-    instr_table.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), YELLOW),
-        ("BOX",           (0, 0), (-1, -1), 1.0, colors.HexColor("#CCCCCC")),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
-        ("TOPPADDING",    (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    story.append(instr_table)
+        instr += f"\nПублікація онлайн дипломів запланована на {publish_date} на сайті https://toronto.org.ua/"
+    story.append(Paragraph(instr.replace("\n", "<br/>"), instr_s))
     story.append(Spacer(1, 0.3*cm))
+
+    # --- Легенда кольорів ---
+    def _badge(text, bg, fg):
+        p = Paragraph(f"<b>{text}</b>",
+                      ParagraphStyle("b", fontName=FONT_BOLD, fontSize=8,
+                                     textColor=fg, leading=10))
+        t = Table([[p]], colWidths=[2.5*cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND",   (0,0),(-1,-1), bg),
+            ("BOX",          (0,0),(-1,-1), 0.5, colors.HexColor("#AAAAAA")),
+            ("LEFTPADDING",  (0,0),(-1,-1), 6),
+            ("RIGHTPADDING", (0,0),(-1,-1), 6),
+            ("TOPPADDING",   (0,0),(-1,-1), 2),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+        ]))
+        return t
+
+    legend_items = [
+        [_badge("Gran Pri",   ROW_COLORS["Gran Pri"],   LAU_TEXT_COLORS["Gran Pri"]),
+         _badge("1st degree", ROW_COLORS["1st degree"], LAU_TEXT_COLORS["1st degree"]),
+         _badge("2nd degree", ROW_COLORS["2nd degree"], LAU_TEXT_COLORS["2nd degree"]),
+         _badge("3d degree",  ROW_COLORS["3d degree"],  LAU_TEXT_COLORS["3d degree"])],
+    ]
+    legend = Table(legend_items, colWidths=[2.7*cm]*4, hAlign="LEFT")
+    legend.setStyle(TableStyle([
+        ("LEFTPADDING",  (0,0),(-1,-1), 0),
+        ("RIGHTPADDING", (0,0),(-1,-1), 6),
+        ("TOPPADDING",   (0,0),(-1,-1), 0),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 0),
+    ]))
+    story.append(legend)
+    story.append(Spacer(1, 0.25*cm))
 
     # --- Сортуємо за алфавітом ---
     sorted_rows = sorted(rows, key=lambda r: r["pib"].lower())
 
-    # --- Будуємо таблицю ---
-    col_widths = [1.3*cm, 5.5*cm, 3.8*cm, 5.0*cm, 2.8*cm]
-
-    # Заголовок таблиці: жовтий фон, жирний текст
-    hdr_cell = ParagraphStyle("hdr_cell", fontName=FONT_BOLD, fontSize=8,
-                               leading=10, textColor=colors.black, alignment=1)
+    # --- Таблиця ---
+    col_widths = [1.3*cm, 5.5*cm, 3.5*cm, 5.3*cm, 2.8*cm]
     table_data = [[
-        Paragraph("ID",                       hdr_cell),
-        Paragraph("ПІБ Учасника",             hdr_cell),
-        Paragraph("Номінація",                hdr_cell),
-        Paragraph("Назва або опис\nроботи",   hdr_cell),
-        Paragraph("Laureate",                 hdr_cell),
+        Paragraph("ID",                      hdr_s),
+        Paragraph("ПІБ Учасника",            hdr_s),
+        Paragraph("Номінація",               hdr_s),
+        Paragraph("Назва або опис роботи",   hdr_s),
+        Paragraph("Laureate",                hdr_s),
     ]]
 
-    lau_col_idx = 4   # індекс колонки Laureate (для кольору клітинки)
-    pib_col_idx = 1   # індекс колонки ПІБ
-
-    lau_cell_styles = []  # накопичуємо (row_idx, color) для клітинки Laureate
+    row_bg_styles  = []
+    lau_txt_styles = []
 
     for i, r in enumerate(sorted_rows, start=1):
         lau   = r["laureate"]
-        nazva = r.get("nazva", "") or ""
-        lau_color = LAUREATE_CELL_COLORS.get(lau, YELLOW)
-        lau_cell_styles.append((i, lau_color))
+        nazva = _clean_nazva(r.get("nazva", "") or "")
+        row_bg  = ROW_COLORS.get(lau, colors.white)
+        lau_fg  = LAU_TEXT_COLORS.get(lau, colors.black)
+        row_bg_styles.append((i, row_bg))
 
+        lau_para = Paragraph(
+            f"<b>{lau}</b>",
+            ParagraphStyle("lau_p", fontName=FONT_BOLD, fontSize=8,
+                           leading=10, textColor=lau_fg),
+        )
         table_data.append([
-            Paragraph(str(r["id"]) if r["id"] else "—", cell_style),
-            Paragraph(r["pib"],   pib_style),          # ПІБ — жирний
-            Paragraph(r["nom"],   cell_style),
-            Paragraph(nazva,      cell_style),
-            Paragraph(lau,        bold_style),          # Laureate — жирний
+            Paragraph(str(r["id"]) if r["id"] else "—", cell_s),
+            Paragraph(r["pib"],  pib_s),
+            Paragraph(r["nom"],  cell_s),
+            Paragraph(nazva,     cell_s),
+            lau_para,
         ])
 
     tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
 
     ts = [
-        # Заголовок таблиці — жовтий фон
-        ("BACKGROUND",    (0, 0), (-1, 0),  YELLOW),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.black),
-        ("FONTNAME",      (0, 0), (-1, 0),  FONT_BOLD),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8),
-        ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-        ("ALIGN",         (0, 0), (-1, 0),  "CENTER"),
-        # Всі рядки даних — жовтий фон
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [YELLOW]),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
-        ("TOPPADDING",    (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("BACKGROUND",    (0,0), (-1,0),  colors.HexColor("#1a237e")),
+        ("TEXTCOLOR",     (0,0), (-1,0),  colors.white),
+        ("FONTNAME",      (0,0), (-1,0),  FONT_BOLD),
+        ("FONTSIZE",      (0,0), (-1,-1), 8),
+        ("GRID",          (0,0), (-1,-1), 0.3, colors.HexColor("#CCCCCC")),
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("ALIGN",         (0,0), (-1,0),  "CENTER"),
+        ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
+        ("LEFTPADDING",   (0,0), (-1,-1), 5),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 5),
+        ("TOPPADDING",    (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
     ]
-
-    # Кольори тільки клітинки Laureate
-    for row_idx, lau_color in lau_cell_styles:
-        ts.append(("BACKGROUND", (lau_col_idx, row_idx), (lau_col_idx, row_idx), lau_color))
+    # Кольорові рядки по ступеню
+    for row_idx, bg in row_bg_styles:
+        ts.append(("BACKGROUND", (0,row_idx), (-1,row_idx), bg))
 
     tbl.setStyle(TableStyle(ts))
     story.append(tbl)

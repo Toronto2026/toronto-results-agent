@@ -157,13 +157,19 @@ if run_btn and uploaded:
     lau_cnt = Counter(r["laureate"] for r in all_rows)
     no_id   = [r for r in all_rows if not r["id"]]
 
+    # Учасники без оцінки (отримали 1st degree автоматично)
+    no_score_rows = [r for r in all_rows if r.get("raw_laureate") == "None"]
+
     # Метрики
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Всього", len(all_rows))
     m2.metric("🥇 Gran Pri",    lau_cnt.get("Gran Pri",   0))
     m3.metric("🥈 1st degree",  lau_cnt.get("1st degree", 0))
     m4.metric("🥉 2nd degree",  lau_cnt.get("2nd degree", 0))
     m5.metric("🎖 3d degree",   lau_cnt.get("3d degree",  0))
+    m6.metric("❓ Без оцінки→1st", len(no_score_rows),
+              delta=f"-{len(no_score_rows)} перевір" if no_score_rows else None,
+              delta_color="inverse")
 
     # Кнопка скачати PDF
     safe_month = month.replace(" ", "_")
@@ -178,7 +184,7 @@ if run_btn and uploaded:
     st.divider()
 
     # Таблиця результатів
-    tabs = st.tabs(["📋 Всі результати", "⭐ Gran Pri", "⚠️ Без ID", "📋 Лог"])
+    tabs = st.tabs(["📋 Всі результати", "⭐ Gran Pri", "❓ Без оцінки → 1st", "⚠️ Без ID", "📋 Лог"])
 
     import pandas as pd
     df = pd.DataFrame([{
@@ -216,6 +222,29 @@ if run_btn and uploaded:
             st.info("Жодного Gran Pri у цих файлах")
 
     with tabs[2]:
+        if no_score_rows:
+            st.warning(f"⚠️ {len(no_score_rows)} учасників не мали оцінки від журі → автоматично отримали **1st degree**. Перевір вручну.")
+            no_score_df = pd.DataFrame([{
+                "ID":           r["id"] or "—",
+                "ПІБ Учасника": r["pib"],
+                "Номінація":    r["nom"],
+                "Назва роботи": r["nazva"],
+                "Файл журі":    r["source"],
+                "Оригінал":     r.get("raw_laureate", ""),
+            } for r in sorted(no_score_rows, key=lambda x: x["pib"].lower())])
+            st.dataframe(no_score_df, use_container_width=True)
+            # CSV для ручної перевірки
+            csv_bytes = no_score_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ Завантажити список для перевірки (CSV)",
+                data=csv_bytes,
+                file_name=f"без_оцінки_{month.replace(' ','_')}.csv",
+                mime="text/csv",
+            )
+        else:
+            st.success("Всі учасники мають оцінку від журі ✅")
+
+    with tabs[3]:
         no_id_df = df[df["ID"] == "—"]
         if len(no_id_df):
             st.warning(f"{len(no_id_df)} учасників без Bitrix24 ID — запис у CRM неможливий")
@@ -223,7 +252,7 @@ if run_btn and uploaded:
         else:
             st.success("Всі учасники мають ID ✅")
 
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("Лог читання файлів")
         st.caption("Детальна інформація про колонки, знайдені/відсутні дані")
         for line in full_log:

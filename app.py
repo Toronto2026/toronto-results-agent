@@ -3,13 +3,14 @@
 Streamlit web-додаток: Публікація результатів фестивалю TORONTO
 """
 
-import io
-import os
-import tempfile
+import io, os, json, tempfile
+from datetime import datetime
+from collections import Counter, defaultdict
 
+import pandas as pd
 import streamlit as st
 
-from agent_results import build_pdf, convert_laureate, read_jury_file, read_all_jury_with_log
+from agent_results import build_pdf, read_jury_file, write_to_bitrix
 
 # ---------------------------------------------------------------------------
 # Конфігурація сторінки
@@ -21,135 +22,178 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Sidebar — налаштування
+# Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ Налаштування")
     month = st.text_input("Місяць", value="Квітень 2026",
                           help="Відображається у заголовку PDF")
-    publish_date = st.text_input("Дата публікації дипломів",
-                                 value="",
-                                 help='Наприклад: "20 квітня". Якщо порожньо — не показується.')
+    publish_date = st.text_input("Дата публікації дипломів", value="",
+                                 help='Наприклад: "20 квітня"')
     st.divider()
     st.subheader("🔗 Bitrix24")
-    bitrix_url = st.text_input(
-        "Webhook URL",
+    bitrix_url_input = st.text_input(
+        "Webhook URL", type="password",
         value=st.session_state.get("bitrix_url", ""),
-        type="password",
-        help="https://toronto.bitrix24.com/rest/1/TOKEN/",
-        key="bitrix_url_input",
         placeholder="https://toronto.bitrix24.com/rest/1/.../",
+        key="bitrix_url_input",
     )
-    if bitrix_url:
-        st.session_state["bitrix_url"] = bitrix_url
-    bx_write_lau  = st.checkbox("Записати Laureate",   value=True)
-    bx_write_com  = st.checkbox("Записати Коментар Журі", value=True)
+    if bitrix_url_input:
+        st.session_state["bitrix_url"] = bitrix_url_input
+    bx_write_lau = st.checkbox("Записати Laureate",      value=True)
+    bx_write_com = st.checkbox("Записати Коментар Журі", value=True)
     st.divider()
-    st.caption("ТЗ v1.0 · agent_results.py")
+    st.caption("v2.0 · agent_results.py")
 
 # ---------------------------------------------------------------------------
-# Головна сторінка
+# Заголовок
 # ---------------------------------------------------------------------------
 st.title("🏆 Результати фестивалю TORONTO")
-st.markdown("Завантажте файли оцінок від членів журі та отримайте PDF таблицю результатів.")
 
 # ---------------------------------------------------------------------------
-# Завантаження файлів
+# Хелпери
 # ---------------------------------------------------------------------------
+def rows_to_json(rows, month_str) -> bytes:
+    return json.dumps({
+        "month":      month_str,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "total":      len(rows),
+        "results":    rows,
+    }, ensure_ascii=False, indent=2).encode("utf-8")
+
+def json_to_rows(data: dict):
+    return data.get("results", [])
+
+def color_cell(val):
+    m = {"Gran Pri":"background-color:#FFE082",
+         "1st degree":"background-color:#DCEDC8",
+         "2nd degree":"background-color:#BBDEFB",
+         "3d degree":"background-color:#E1BEE7"}
+    return m.get(val, "")
+
+def build_df(rows):
+    return pd.DataFrame([{
+        "ID":            r.get("id") or "—",
+        "ПІБ Учасника":  r.get("pib",""),
+        "Номінація":     r.get("nom",""),
+        "Назва роботи":  r.get("nazva",""),
+        "Laureate":      r.get("laureate",""),
+        "Коментар":      r.get("comment",""),
+        "Файл журі":     r.get("source",""),
+    } for r in sorted(rows, key=lambda x: x.get("pib","").lower())])
+
+def dedup_by_id(rows):
+    seen, out, count = {}, [], 0
+    for r in rows:
+        rid = str(r.get("id","")).strip()
+        if rid and rid not in ("None","—",""):
+            if rid in seen:
+                count += 1
+                continue
+            seen[rid] = True
+        out.append(r)
+    return out, count
+
+def find_duplicates(rows):
+    groups = defaultdict(list)
+    for r in rows:
+        key = (r.get("pib","").strip().lower(),
+               (r.get("nazva","") or "").strip().lower())
+        groups[key].append(r)
+    conflicts = {k:v for k,v in groups.items() if len(v)>1 and len(set(x["laureate"] for x in v))>1}
+    same      = {k:v for k,v in groups.items() if len(v)>1 and len(set(x["laureate"] for x in v))==1}
+    return conflicts, same
+
+# ---------------------------------------------------------------------------
+# РЕЖИМ 1: завантажити збережений JSON
+# ---------------------------------------------------------------------------
+st.subheader("📂 Завантажити збережені результати")
+json_file = st.file_uploader(
+    "Завантажте результати попереднього конкурсу (JSON)",
+    type=["json"], key="json_upload",
+    help="Файл генерується при кожному формуванні результатів"
+)
+
+loaded_rows = None
+loaded_meta = {}
+if json_file:
+    try:
+        data = json.loads(json_file.read().decode("utf-8"))
+        loaded_rows = json_to_rows(data)
+        loaded_meta = {k:v for k,v in data.items() if k != "results"}
+        upd = loaded_meta.get("updated_at","—")
+        mon = loaded_meta.get("month","—")
+        st.success(f"✅ Завантажено **{len(loaded_rows)}** учасників | Конкурс: **{mon}** | Оновлено: **{upd}**")
+    except Exception as e:
+        st.error(f"Помилка читання JSON: {e}")
+        loaded_rows = None
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# РЕЖИМ 2: завантажити файли журі
+# ---------------------------------------------------------------------------
+st.subheader("📋 Або завантажте нові файли від журі")
 col1, col2, col3 = st.columns(3)
 with col1:
-    file1 = st.file_uploader("📋 Оцінки журі №1 (Лариса)", type=["xlsx"],
-                              key="jury1")
+    file1 = st.file_uploader("Журі №1 (Лариса)", type=["xlsx"], key="jury1")
 with col2:
-    file2 = st.file_uploader("📋 Оцінки журі №2 (Світлана)", type=["xlsx"],
-                              key="jury2")
+    file2 = st.file_uploader("Журі №2 (Світлана)", type=["xlsx"], key="jury2")
 with col3:
-    file3 = st.file_uploader("📋 Оцінки журі №3 (ДПМ)", type=["xlsx"],
-                              key="jury3")
+    file3 = st.file_uploader("Журі №3 (ДПМ)", type=["xlsx"], key="jury3")
 
 uploaded = [f for f in [file1, file2, file3] if f is not None]
 
-if uploaded:
-    st.info(f"Завантажено файлів: **{len(uploaded)}** з 3")
-else:
-    st.warning("Завантажте хоча б один файл оцінок журі")
-
-# ---------------------------------------------------------------------------
-# Кнопка запуску
-# ---------------------------------------------------------------------------
 run_btn = st.button(
-    "▶️ Сформувати результати",
+    "▶️ Сформувати результати з файлів журі",
     type="primary",
     disabled=len(uploaded) == 0,
 )
 
 # ---------------------------------------------------------------------------
-# Обробка
+# Обробка файлів журі
 # ---------------------------------------------------------------------------
 if run_btn and uploaded:
     with st.status("Обробляю файли...", expanded=True) as status:
+        all_rows, errors, full_log = [], [], []
 
-        all_rows = []
-        errors = []
-        full_log = []
-
-        # Читаємо кожен файл
-        for i, uploaded_file in enumerate(uploaded, 1):
-            st.write(f"📂 Читаю файл {i}: {uploaded_file.name}...")
+        for i, uf in enumerate(uploaded, 1):
+            st.write(f"📂 Читаю файл {i}: {uf.name}...")
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-                    tmp.write(uploaded_file.read())
+                    tmp.write(uf.read())
                     tmp_path = tmp.name
                 rows, log = read_jury_file(tmp_path)
                 os.unlink(tmp_path)
                 all_rows.extend(rows)
-                full_log.extend(log)
-                full_log.append("")
+                full_log.extend(log + [""])
                 no_score = sum(1 for r in rows if r.get("raw_laureate") == "None")
                 no_id    = sum(1 for r in rows if not r["id"])
                 st.write(f"   ✅ {len(rows)} рядків"
                          + (f" | ⚠️ без оцінки: {no_score}" if no_score else "")
-                         + (f" | ⚠️ без ID: {no_id}" if no_id else ""))
+                         + (f" | ⚠️ без ID: {no_id}"        if no_id    else ""))
                 if rows and no_score == len(rows):
-                    st.warning(f"   ⛔ Файл **{uploaded_file.name}**: всі рядки без оцінки (Laureate порожній). "
-                               "Схоже, завантажено вихідний файл до оцінювання. "
-                               "Завантажте файл **після** роботи агента журі.")
+                    st.warning(f"⛔ **{uf.name}**: всі рядки без оцінки — завантажено файл ДО оцінювання!")
             except Exception as e:
-                errors.append(f"{uploaded_file.name}: {e}")
-                full_log.append(f"❌ {uploaded_file.name}: {e}")
+                errors.append(f"{uf.name}: {e}")
                 st.write(f"   ❌ Помилка: {e}")
 
         if not all_rows:
-            st.error("Не знайдено жодного рядка з оцінками!")
+            st.error("Не знайдено жодного рядка!")
             status.update(label="Помилка!", state="error")
             st.stop()
 
-        # Дедуплікація по ID (захист від дублів між файлами журі)
-        seen_ids = {}
-        dedup_rows = []
-        dedup_count = 0
-        for r in all_rows:
-            rid = str(r["id"]).strip() if r["id"] else None
-            if rid and rid not in ("None", "—", ""):
-                if rid in seen_ids:
-                    dedup_count += 1
-                    continue
-                seen_ids[rid] = True
-            dedup_rows.append(r)
+        all_rows, dedup_count = dedup_by_id(all_rows)
         if dedup_count:
-            st.warning(f"⚠️ Видалено дублів по ID: **{dedup_count}** (один учасник у кількох файлах журі)")
-        all_rows = dedup_rows
+            st.warning(f"⚠️ Видалено дублів по ID: **{dedup_count}**")
 
-        total_no_score = sum(1 for r in all_rows if r.get("raw_laureate") == "None")
+        total_none = sum(1 for r in all_rows if r.get("raw_laureate") == "None")
         st.write(f"📊 Всього учасників: **{len(all_rows)}**")
-        if total_no_score / len(all_rows) > 0.8:
-            st.error(f"⛔ {total_no_score} з {len(all_rows)} учасників без оцінки ({total_no_score*100//len(all_rows)}%). "
-                     "Схоже, завантажено файли **до** оцінювання агентом журі. PDF буде некоректним.")
+        if all_rows and total_none / len(all_rows) > 0.8:
+            st.error(f"⛔ {total_none}/{len(all_rows)} без оцінки — файли до оцінювання!")
 
-        # Генеруємо PDF
         st.write("📄 Генерую PDF...")
         try:
-            pdf_buf = io.BytesIO()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
                 tmp_pdf_path = tmp_pdf.name
             build_pdf(all_rows, tmp_pdf_path, month, publish_date)
@@ -158,265 +202,249 @@ if run_btn and uploaded:
             os.unlink(tmp_pdf_path)
             st.write("   ✅ PDF готовий")
         except Exception as e:
-            st.error(f"Помилка генерації PDF: {e}")
+            st.error(f"Помилка PDF: {e}")
             status.update(label="Помилка PDF!", state="error")
             st.stop()
 
         status.update(label="Готово! ✅", state="complete", expanded=False)
 
-    # -------------------------------------------------------------------
-    # Результати
-    # -------------------------------------------------------------------
-    from collections import Counter
-    lau_cnt = Counter(r["laureate"] for r in all_rows)
-    no_id   = [r for r in all_rows if not r["id"]]
+    # Зберігаємо у session_state
+    st.session_state["all_rows"]  = all_rows
+    st.session_state["full_log"]  = full_log
+    st.session_state["pdf_bytes"] = pdf_bytes
+    st.session_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.session_state["result_month"] = month
 
-    # Учасники без оцінки (отримали 1st degree автоматично)
-    no_score_rows = [r for r in all_rows if r.get("raw_laureate") == "None"]
+# Якщо завантажений JSON — кладемо у session_state
+if loaded_rows is not None:
+    st.session_state["all_rows"]   = loaded_rows
+    st.session_state["full_log"]   = []
+    st.session_state["pdf_bytes"]  = None
+    st.session_state["updated_at"] = loaded_meta.get("updated_at", "—")
+    st.session_state["result_month"] = loaded_meta.get("month", month)
 
-    # Можливі дублі: різний ID, однакові ПІБ + Назва роботи
-    from collections import defaultdict
-    _dup_key = {}  # (pib_norm, nazva_norm) -> list of rows
-    for r in all_rows:
-        pib_n   = r["pib"].strip().lower()
-        nazva_n = (r.get("nazva") or "").strip().lower()
-        key = (pib_n, nazva_n)
-        if key not in _dup_key:
-            _dup_key[key] = []
-        _dup_key[key].append(r)
-    # Тільки групи де >1 рядок
-    dup_groups = {k: v for k, v in _dup_key.items() if len(v) > 1}
-    # Розділяємо: конфлікт (різні laureate) і просто дублі (однакові laureate)
-    conflict_groups = {k: v for k, v in dup_groups.items()
-                       if len(set(r["laureate"] for r in v)) > 1}
-    same_groups     = {k: v for k, v in dup_groups.items()
-                       if len(set(r["laureate"] for r in v)) == 1}
+# ---------------------------------------------------------------------------
+# Відображення результатів (якщо є у session_state)
+# ---------------------------------------------------------------------------
+if "all_rows" not in st.session_state:
+    st.stop()
 
-    # Метрики
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Всього", len(all_rows))
-    m2.metric("🥇 Gran Pri",    lau_cnt.get("Gran Pri",   0))
-    m3.metric("🥈 1st degree",  lau_cnt.get("1st degree", 0))
-    m4.metric("🥉 2nd degree",  lau_cnt.get("2nd degree", 0))
-    m5.metric("🎖 3d degree",   lau_cnt.get("3d degree",  0))
-    m6.metric("❓ Без оцінки→1st", len(no_score_rows),
-              delta=f"-{len(no_score_rows)} перевір" if no_score_rows else None,
-              delta_color="inverse")
+all_rows    = st.session_state["all_rows"]
+full_log    = st.session_state.get("full_log", [])
+pdf_bytes   = st.session_state.get("pdf_bytes")
+updated_at  = st.session_state.get("updated_at", "—")
+res_month   = st.session_state.get("result_month", month)
 
-    if conflict_groups:
-        st.error(f"🚨 Знайдено **{len(conflict_groups)}** груп з РІЗНИМИ оцінками для однакового учасника+твору! Перевір вкладку «🚨 Конфлікти».")
-    elif dup_groups:
-        st.warning(f"⚠️ Знайдено **{len(dup_groups)}** дублікатів (різний ID, однакові ім'я+твір). Оцінки співпадають — перевір вкладку «🔁 Дублі».")
+st.divider()
 
-    # Кнопка скачати PDF
-    safe_month = month.replace(" ", "_")
+# Заголовок результатів
+st.subheader(f"📊 Результати — {res_month}")
+st.caption(f"🕐 Останнє оновлення: **{updated_at}**")
+
+lau_cnt      = Counter(r["laureate"] for r in all_rows)
+no_score_rows = [r for r in all_rows if r.get("raw_laureate") == "None"]
+conflict_groups, same_groups = find_duplicates(all_rows)
+dup_groups = {**conflict_groups, **same_groups}
+
+# Метрики
+m1,m2,m3,m4,m5,m6 = st.columns(6)
+m1.metric("Всього",            len(all_rows))
+m2.metric("🥇 Gran Pri",       lau_cnt.get("Gran Pri",   0))
+m3.metric("🥈 1st degree",     lau_cnt.get("1st degree", 0))
+m4.metric("🥉 2nd degree",     lau_cnt.get("2nd degree", 0))
+m5.metric("🎖 3d degree",      lau_cnt.get("3d degree",  0))
+m6.metric("❓ Без оцінки→1st", len(no_score_rows))
+
+if conflict_groups:
+    st.error(f"🚨 **{len(conflict_groups)}** конфліктів — однаковий учасник+твір, різні оцінки! → вкладка «🚨 Конфлікти»")
+elif dup_groups:
+    st.warning(f"🔁 **{len(dup_groups)}** дублів (однакові оцінки) → вкладка «🔁 Дублі»")
+
+# Кнопки завантаження
+safe_month = res_month.replace(" ", "_")
+btn1, btn2 = st.columns(2)
+with btn1:
+    if pdf_bytes:
+        st.download_button("⬇️ Завантажити PDF",
+                           data=pdf_bytes,
+                           file_name=f"!!!РЕЗУЛЬТАТИ-{safe_month}.pdf",
+                           mime="application/pdf", type="primary")
+    else:
+        if st.button("🔄 Згенерувати PDF", type="secondary"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+                tmp_pdf_path = tmp_pdf.name
+            build_pdf(all_rows, tmp_pdf_path, res_month, publish_date)
+            with open(tmp_pdf_path, "rb") as f:
+                st.session_state["pdf_bytes"] = f.read()
+            os.unlink(tmp_pdf_path)
+            st.rerun()
+
+with btn2:
+    json_bytes = rows_to_json(all_rows, res_month)
     st.download_button(
-        label="⬇️ Завантажити PDF результатів",
-        data=pdf_bytes,
-        file_name=f"!!!РЕЗУЛЬТАТИ-{safe_month}.pdf",
-        mime="application/pdf",
-        type="primary",
+        "💾 Зберегти результати (JSON)",
+        data=json_bytes,
+        file_name=f"результати-{safe_month}.json",
+        mime="application/json",
+        help="Завантажте цей файл щоб наступного разу не завантажувати xlsx файли журі",
     )
 
-    st.divider()
+st.divider()
 
-    # Таблиця результатів
-    tabs = st.tabs(["📋 Всі результати", "⭐ Gran Pri", "🚨 Конфлікти", "🔁 Дублі", "❓ Без оцінки → 1st", "⚠️ Без ID", "📋 Лог"])
+# ---------------------------------------------------------------------------
+# Вкладки
+# ---------------------------------------------------------------------------
+df = build_df(all_rows)
 
-    import pandas as pd
-    df = pd.DataFrame([{
-        "ID":       r["id"] or "—",
-        "ПІБ Учасника": r["pib"],
-        "Номінація": r["nom"],
-        "Назва роботи": r["nazva"],
-        "Laureate":  r["laureate"],
-        "Файл журі": r["source"],
-    } for r in sorted(all_rows, key=lambda x: x["pib"].lower())])
+tabs = st.tabs([
+    "📋 Всі результати", "⭐ Gran Pri",
+    "🚨 Конфлікти", "🔁 Дублі",
+    "❓ Без оцінки", "⚠️ Без ID",
+    "📋 Лог",
+])
 
-    # Кольори по laureate
-    def color_row(val):
-        colors_map = {
-            "Gran Pri":   "background-color: #FFD700; color: #000",
-            "1st degree": "background-color: #C8E6C9",
-            "2nd degree": "background-color: #BBDEFB",
-            "3d degree":  "background-color: #F3E5F5",
-        }
-        return colors_map.get(val, "")
+with tabs[0]:
+    st.dataframe(df.style.map(color_cell, subset=["Laureate"]),
+                 use_container_width=True, height=520)
 
-    with tabs[0]:
-        st.dataframe(
-            df.style.map(color_row, subset=["Laureate"]),
-            use_container_width=True,
-            height=500,
-        )
+with tabs[1]:
+    gp = df[df["Laureate"] == "Gran Pri"]
+    st.dataframe(gp.style.map(color_cell, subset=["Laureate"]),
+                 use_container_width=True) if len(gp) else st.info("Жодного Gran Pri")
 
-    with tabs[1]:
-        gp = df[df["Laureate"] == "Gran Pri"]
-        if len(gp):
-            st.dataframe(gp.style.map(color_row, subset=["Laureate"]),
-                         use_container_width=True)
-        else:
-            st.info("Жодного Gran Pri у цих файлах")
-
-    # --- Вкладка: Конфлікти (різні оцінки для однакового учасника+твору) ---
-    with tabs[2]:
-        if not conflict_groups:
-            st.success("Конфліктів не знайдено ✅ — всі однакові учасники+твори мають однакову оцінку.")
-        else:
-            st.error(f"🚨 {len(conflict_groups)} груп з РІЗНИМИ оцінками для одного учасника/твору. Потрібне ручне рішення!")
-            for (pib_n, nazva_n), group in sorted(conflict_groups.items()):
-                lau_vals = ", ".join(set(r["laureate"] for r in group))
-                st.markdown(f"**{group[0]['pib']}** | *{group[0].get('nazva','') or '—'}*  →  оцінки: `{lau_vals}`")
-                g_df = pd.DataFrame([{
-                    "ID": r["id"] or "—", "ПІБ": r["pib"],
-                    "Номінація": r["nom"], "Назва": r.get("nazva",""),
-                    "Laureate": r["laureate"], "Файл журі": r["source"],
-                } for r in group])
-                st.dataframe(g_df.style.map(color_row, subset=["Laureate"]),
-                             use_container_width=True)
-                st.divider()
-            csv_c = pd.DataFrame([{
-                "ID": r["id"] or "—", "ПІБ": r["pib"], "Номінація": r["nom"],
-                "Назва": r.get("nazva",""), "Laureate": r["laureate"], "Файл": r["source"],
-            } for g in conflict_groups.values() for r in g]).to_csv(index=False).encode("utf-8-sig")
-            st.download_button("⬇️ CSV конфліктів", csv_c,
-                               f"конфлікти_{month.replace(' ','_')}.csv", "text/csv")
-
-    # --- Вкладка: Дублі (однакові оцінки — можна прибрати) ---
-    with tabs[3]:
-        if not same_groups:
-            st.success("Дублів не знайдено ✅")
-        else:
-            st.warning(f"🔁 {len(same_groups)} груп — різний ID, однакові ім'я+твір, **оцінки однакові**. "
-                       "Можливо, учасник подав заявку двічі. Можна залишити або прибрати один рядок.")
-            for (pib_n, nazva_n), group in sorted(same_groups.items()):
-                ids = " / ".join(str(r["id"]) for r in group)
-                st.markdown(f"**{group[0]['pib']}** | *{group[0].get('nazva','') or '—'}*  →  ID: `{ids}`  →  `{group[0]['laureate']}`")
-            st.divider()
-            csv_d = pd.DataFrame([{
-                "ID": r["id"] or "—", "ПІБ": r["pib"], "Номінація": r["nom"],
-                "Назва": r.get("nazva",""), "Laureate": r["laureate"], "Файл": r["source"],
-            } for g in same_groups.values() for r in g]).to_csv(index=False).encode("utf-8-sig")
-            st.download_button("⬇️ CSV дублів", csv_d,
-                               f"дублі_{month.replace(' ','_')}.csv", "text/csv")
-
-    with tabs[4]:
-        if no_score_rows:
-            st.warning(f"⚠️ {len(no_score_rows)} учасників не мали оцінки від журі → автоматично отримали **1st degree**. Перевір вручну.")
-            no_score_df = pd.DataFrame([{
-                "ID":           r["id"] or "—",
-                "ПІБ Учасника": r["pib"],
-                "Номінація":    r["nom"],
-                "Назва роботи": r["nazva"],
-                "Файл журі":    r["source"],
-                "Оригінал":     r.get("raw_laureate", ""),
-            } for r in sorted(no_score_rows, key=lambda x: x["pib"].lower())])
-            st.dataframe(no_score_df, use_container_width=True)
-            # CSV для ручної перевірки
-            csv_bytes = no_score_df.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "⬇️ Завантажити список для перевірки (CSV)",
-                data=csv_bytes,
-                file_name=f"без_оцінки_{month.replace(' ','_')}.csv",
-                mime="text/csv",
-            )
-        else:
-            st.success("Всі учасники мають оцінку від журі ✅")
-
-    with tabs[5]:
-        no_id_df = df[df["ID"] == "—"]
-        if len(no_id_df):
-            st.warning(f"{len(no_id_df)} учасників без Bitrix24 ID — запис у CRM неможливий")
-            st.dataframe(no_id_df, use_container_width=True)
-        else:
-            st.success("Всі учасники мають ID ✅")
-
-    with tabs[6]:
-        st.subheader("Лог читання файлів")
-        st.caption("Детальна інформація про колонки, знайдені/відсутні дані")
-        for line in full_log:
-            if line.startswith("📂"):
-                st.markdown(f"**{line}**")
-            elif "❌" in line or "🚫" in line:
-                st.error(line)
-            elif "⚠️" in line:
-                st.warning(line)
-            elif "✅" in line:
-                st.success(line)
-            elif line == "":
-                st.divider()
-            else:
-                st.text(line)
-
-    # Помилки читання файлів
-    if errors:
-        with st.expander(f"⚠️ Помилки ({len(errors)})"):
-            for e in errors:
-                st.error(e)
-
-    # -----------------------------------------------------------------------
-    # Bitrix24 — запис результатів
-    # -----------------------------------------------------------------------
-    st.divider()
-    st.subheader("🔗 Записати результати у Bitrix24")
-
-    bx_url = st.session_state.get("bitrix_url", "").strip()
-    rows_with_id = [r for r in all_rows if r.get("id") and str(r["id"]).strip().isdigit()]
-    rows_no_id   = [r for r in all_rows if not (r.get("id") and str(r["id"]).strip().isdigit())]
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Записати можна", len(rows_with_id))
-    c2.metric("Без ID (пропустимо)", len(rows_no_id))
-    c3.metric("Поля", ("Laureate + Коментар" if bx_write_lau and bx_write_com
-                        else "Laureate" if bx_write_lau else "Коментар"))
-
-    if not bx_url:
-        st.info("👈 Введіть Webhook URL у бічній панелі щоб активувати запис у Bitrix24")
+with tabs[2]:
+    if not conflict_groups:
+        st.success("Конфліктів не знайдено ✅")
     else:
-        st.success(f"Webhook: `{bx_url[:40]}...`")
+        st.error(f"🚨 {len(conflict_groups)} конфліктів — потрібне ручне рішення!")
+        for (p,n), grp in sorted(conflict_groups.items()):
+            lau_vals = " / ".join(sorted(set(r["laureate"] for r in grp)))
+            st.markdown(f"**{grp[0]['pib']}** | *{grp[0].get('nazva','') or '—'}* → `{lau_vals}`")
+            st.dataframe(build_df(grp).style.map(color_cell, subset=["Laureate"]),
+                         use_container_width=True)
+            st.divider()
+        csv_c = build_df([r for g in conflict_groups.values() for r in g]).to_csv(index=False).encode("utf-8-sig")
+        st.download_button("⬇️ CSV конфліктів", csv_c, f"конфлікти-{safe_month}.csv", "text/csv")
 
-        if st.button("▶️ Записати у Bitrix24", type="primary", key="bx_run"):
-            from agent_results import write_to_bitrix
+with tabs[3]:
+    if not same_groups:
+        st.success("Дублів не знайдено ✅")
+    else:
+        st.warning(f"🔁 {len(same_groups)} груп дублів — оцінки однакові, але різні ID")
+        for (p,n), grp in sorted(same_groups.items()):
+            ids = " / ".join(str(r["id"]) for r in grp)
+            st.markdown(f"**{grp[0]['pib']}** | *{grp[0].get('nazva','') or '—'}* → ID: `{ids}` → `{grp[0]['laureate']}`")
+        csv_d = build_df([r for g in same_groups.values() for r in g]).to_csv(index=False).encode("utf-8-sig")
+        st.download_button("⬇️ CSV дублів", csv_d, f"дублі-{safe_month}.csv", "text/csv")
 
-            progress_bar = st.progress(0.0, text="Починаю...")
-            status_box   = st.empty()
-            log_lines    = []
+with tabs[4]:
+    if no_score_rows:
+        st.warning(f"⚠️ {len(no_score_rows)} учасників без оцінки → автоматично 1st degree")
+        ns_df = build_df(no_score_rows)
+        st.dataframe(ns_df, use_container_width=True)
+        st.download_button("⬇️ CSV для перевірки",
+                           ns_df.to_csv(index=False).encode("utf-8-sig"),
+                           f"без_оцінки-{safe_month}.csv", "text/csv")
+    else:
+        st.success("Всі учасники мають оцінку ✅")
 
-            def on_progress(done, total, row, status):
-                frac = done / total
-                pib  = (row.get("pib") or "")[:35]
-                rid  = row.get("id", "?")
-                if status == "ok":
-                    msg = f"✅ {done}/{total} — {pib} (ID {rid})"
-                elif status == "skip":
-                    msg = f"⏭ {done}/{total} — пропущено (ID {rid})"
-                else:
-                    msg = f"❌ {done}/{total} — {pib} (ID {rid}): {status[4:60]}"
-                    log_lines.append(msg)
-                progress_bar.progress(frac, text=msg)
+with tabs[5]:
+    no_id_df = df[df["ID"] == "—"]
+    if len(no_id_df):
+        st.warning(f"{len(no_id_df)} учасників без Bitrix24 ID")
+        st.dataframe(no_id_df, use_container_width=True)
+    else:
+        st.success("Всі учасники мають ID ✅")
 
-            with st.spinner("Записую у Bitrix24..."):
-                result = write_to_bitrix(
-                    rows_with_id,
-                    bx_url,
-                    write_laureate=bx_write_lau,
-                    write_comment=bx_write_com,
-                    progress_cb=on_progress,
-                )
+with tabs[6]:
+    if full_log:
+        for line in full_log:
+            if   line.startswith("📂"):  st.markdown(f"**{line}**")
+            elif "❌" in line or "🚫" in line: st.error(line)
+            elif "⚠️" in line:          st.warning(line)
+            elif "✅" in line:           st.success(line)
+            elif line == "":             st.divider()
+            else:                        st.text(line)
+    else:
+        st.info("Лог доступний тільки після завантаження файлів журі (не з JSON)")
 
-            progress_bar.progress(1.0, text="Готово!")
+# ---------------------------------------------------------------------------
+# Bitrix24
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("🔗 Записати результати у Bitrix24")
 
-            r1, r2, r3 = st.columns(3)
-            r1.metric("✅ Записано",  result["ok"])
-            r2.metric("❌ Помилок",   result["err"],
-                      delta=f"-{result['err']}" if result["err"] else None,
-                      delta_color="inverse")
-            r3.metric("⏭ Пропущено", result["skip"])
+bx_url = st.session_state.get("bitrix_url", "").strip()
+rows_with_id = [r for r in all_rows if r.get("id") and str(r.get("id","")).strip().isdigit()]
+rows_no_id   = len(all_rows) - len(rows_with_id)
 
-            if result["err"] == 0:
-                st.success("Всі записи успішно збережені у Bitrix24 ✅")
+c1,c2,c3 = st.columns(3)
+c1.metric("Будуть записані", len(rows_with_id))
+c2.metric("Без ID (пропуск)", rows_no_id)
+c3.metric("Поля", "Laureate + Коментар" if bx_write_lau and bx_write_com
+          else "Тільки Laureate" if bx_write_lau else "Тільки Коментар")
+
+if not bx_url:
+    st.info("👈 Введіть Webhook URL у бічній панелі")
+else:
+    st.caption(f"Webhook: `{bx_url[:45]}...`")
+
+    if st.button("▶️ Записати у Bitrix24", type="primary", key="bx_run",
+                 disabled=not bx_url):
+
+        progress_bar = st.progress(0.0, text="Починаю...")
+        bx_log = []   # список dict для таблиці логу
+
+        def on_progress(done, total, row, status):
+            frac = done / total
+            pib  = (row.get("pib") or "")[:40]
+            rid  = row.get("id","?")
+            if status == "ok":
+                icon, msg = "✅", ""
+                progress_bar.progress(frac, text=f"✅ {done}/{total} — {pib}")
+            elif status == "skip":
+                icon, msg = "⏭", "немає ID або значення"
+                progress_bar.progress(frac, text=f"⏭ {done}/{total} — пропущено")
             else:
-                st.warning(f"{result['err']} помилок — деталі нижче")
-                with st.expander("❌ Помилки Bitrix24"):
-                    for rid, msg in result["errors"]:
-                        st.error(f"ID {rid}: {msg}")
+                icon, msg = "❌", status[4:80]
+                progress_bar.progress(frac, text=f"❌ {done}/{total} — {pib}: помилка")
+            bx_log.append({"Статус": icon, "ID": rid, "ПІБ": pib,
+                           "Laureate": row.get("laureate",""), "Деталі": msg})
+
+        with st.spinner("Записую у Bitrix24..."):
+            result = write_to_bitrix(
+                rows_with_id, bx_url,
+                write_laureate=bx_write_lau,
+                write_comment=bx_write_com,
+                progress_cb=on_progress,
+            )
+
+        progress_bar.progress(1.0, text="Готово!")
+
+        # Метрики результату
+        r1,r2,r3 = st.columns(3)
+        r1.metric("✅ Записано",  result["ok"])
+        r2.metric("❌ Помилок",   result["err"],
+                  delta=f"-{result['err']}" if result["err"] else None,
+                  delta_color="inverse")
+        r3.metric("⏭ Пропущено", result["skip"])
+
+        if result["err"] == 0:
+            st.success(f"✅ Всі {result['ok']} записів збережені у Bitrix24!")
+        else:
+            st.warning(f"⚠️ {result['err']} помилок з {len(rows_with_id)}")
+
+        # Детальний лог
+        with st.expander("📋 Детальний лог Bitrix24", expanded=result["err"] > 0):
+            log_df = pd.DataFrame(bx_log)
+            def color_status(val):
+                return ("color: green" if val == "✅" else
+                        "color: red"   if val == "❌" else "color: grey")
+            st.dataframe(log_df.style.map(color_status, subset=["Статус"]),
+                         use_container_width=True, height=400)
+            # CSV логу
+            st.download_button(
+                "⬇️ Завантажити лог CSV",
+                log_df.to_csv(index=False).encode("utf-8-sig"),
+                f"bitrix24-лог-{safe_month}.csv", "text/csv",
+            )

@@ -31,6 +31,20 @@ with st.sidebar:
                                  value="",
                                  help='Наприклад: "20 квітня". Якщо порожньо — не показується.')
     st.divider()
+    st.subheader("🔗 Bitrix24")
+    bitrix_url = st.text_input(
+        "Webhook URL",
+        value=st.session_state.get("bitrix_url", ""),
+        type="password",
+        help="https://toronto.bitrix24.com/rest/1/TOKEN/",
+        key="bitrix_url_input",
+        placeholder="https://toronto.bitrix24.com/rest/1/.../",
+    )
+    if bitrix_url:
+        st.session_state["bitrix_url"] = bitrix_url
+    bx_write_lau  = st.checkbox("Записати Laureate",   value=True)
+    bx_write_com  = st.checkbox("Записати Коментар Журі", value=True)
+    st.divider()
     st.caption("ТЗ v1.0 · agent_results.py")
 
 # ---------------------------------------------------------------------------
@@ -339,3 +353,70 @@ if run_btn and uploaded:
         with st.expander(f"⚠️ Помилки ({len(errors)})"):
             for e in errors:
                 st.error(e)
+
+    # -----------------------------------------------------------------------
+    # Bitrix24 — запис результатів
+    # -----------------------------------------------------------------------
+    st.divider()
+    st.subheader("🔗 Записати результати у Bitrix24")
+
+    bx_url = st.session_state.get("bitrix_url", "").strip()
+    rows_with_id = [r for r in all_rows if r.get("id") and str(r["id"]).strip().isdigit()]
+    rows_no_id   = [r for r in all_rows if not (r.get("id") and str(r["id"]).strip().isdigit())]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Записати можна", len(rows_with_id))
+    c2.metric("Без ID (пропустимо)", len(rows_no_id))
+    c3.metric("Поля", ("Laureate + Коментар" if bx_write_lau and bx_write_com
+                        else "Laureate" if bx_write_lau else "Коментар"))
+
+    if not bx_url:
+        st.info("👈 Введіть Webhook URL у бічній панелі щоб активувати запис у Bitrix24")
+    else:
+        st.success(f"Webhook: `{bx_url[:40]}...`")
+
+        if st.button("▶️ Записати у Bitrix24", type="primary", key="bx_run"):
+            from agent_results import write_to_bitrix
+
+            progress_bar = st.progress(0.0, text="Починаю...")
+            status_box   = st.empty()
+            log_lines    = []
+
+            def on_progress(done, total, row, status):
+                frac = done / total
+                pib  = (row.get("pib") or "")[:35]
+                rid  = row.get("id", "?")
+                if status == "ok":
+                    msg = f"✅ {done}/{total} — {pib} (ID {rid})"
+                elif status == "skip":
+                    msg = f"⏭ {done}/{total} — пропущено (ID {rid})"
+                else:
+                    msg = f"❌ {done}/{total} — {pib} (ID {rid}): {status[4:60]}"
+                    log_lines.append(msg)
+                progress_bar.progress(frac, text=msg)
+
+            with st.spinner("Записую у Bitrix24..."):
+                result = write_to_bitrix(
+                    rows_with_id,
+                    bx_url,
+                    write_laureate=bx_write_lau,
+                    write_comment=bx_write_com,
+                    progress_cb=on_progress,
+                )
+
+            progress_bar.progress(1.0, text="Готово!")
+
+            r1, r2, r3 = st.columns(3)
+            r1.metric("✅ Записано",  result["ok"])
+            r2.metric("❌ Помилок",   result["err"],
+                      delta=f"-{result['err']}" if result["err"] else None,
+                      delta_color="inverse")
+            r3.metric("⏭ Пропущено", result["skip"])
+
+            if result["err"] == 0:
+                st.success("Всі записи успішно збережені у Bitrix24 ✅")
+            else:
+                st.warning(f"{result['err']} помилок — деталі нижче")
+                with st.expander("❌ Помилки Bitrix24"):
+                    for rid, msg in result["errors"]:
+                        st.error(f"ID {rid}: {msg}")

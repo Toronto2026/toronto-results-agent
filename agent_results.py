@@ -458,46 +458,91 @@ def build_pdf(rows: list[dict], output_path: str, month: str, publish_date: str 
 # ---------------------------------------------------------------------------
 # Запис у Bitrix24
 # ---------------------------------------------------------------------------
-LAUREATE_BITRIX = {
-    "Gran Pri":   "Gran Pri",
-    "1st degree": "1st degree",
-    "2nd degree": "2nd degree",
-    "3d degree":  "3d degree",
+
+# UF_CRM_1690186104647 — Laureate (enumeration)
+# UF_CRM_1702407283770 — Коментар Журі (string)
+LAUREATE_ENUM_ID = {
+    "Gran Pri":   184,
+    "1st degree": 178,
+    "2nd degree": 180,
+    "3d degree":  182,
 }
 
-def write_to_bitrix(rows: list[dict], webhook_url: str):
-    """Записує поле Laureate у Bitrix24 для кожного ID."""
+def write_to_bitrix(
+    rows: list[dict],
+    webhook_url: str,
+    write_laureate: bool = True,
+    write_comment: bool = True,
+    progress_cb=None,          # callable(done, total, row, status) — для Streamlit
+) -> dict:
+    """
+    Записує Laureate та/або Коментар Журі у Bitrix24 по ID угоди.
+    Повертає {'ok': N, 'err': N, 'skip': N, 'errors': [(id, msg), ...]}.
+    """
     webhook_url = webhook_url.rstrip("/")
+    endpoint    = f"{webhook_url}/crm.deal.update.json"
     ok = err = skip = 0
-    for r in rows:
+    errors = []
+    total  = len(rows)
+
+    for i, r in enumerate(rows):
         rid = r.get("id")
-        lau = r.get("laureate")
-        if not rid or not lau:
+        lau = r.get("laureate", "")
+        comment = r.get("comment", "") or ""
+
+        # Пропускаємо якщо немає ID
+        if not rid:
             skip += 1
+            if progress_cb:
+                progress_cb(i + 1, total, r, "skip")
             continue
         try:
-            rid_int = int(rid)
+            rid_int = int(str(rid).strip())
         except (ValueError, TypeError):
             skip += 1
+            if progress_cb:
+                progress_cb(i + 1, total, r, "skip")
             continue
 
-        url = f"{webhook_url}/crm.deal.update.json"
-        payload = {
-            "id": rid_int,
-            "fields": {"UF_CRM_LAUREATE": LAUREATE_BITRIX.get(lau, lau)},
-        }
-        try:
-            resp = requests.post(url, json=payload, timeout=10)
-            if resp.ok and resp.json().get("result"):
-                ok += 1
-            else:
-                print(f"  ПОМИЛКА ID {rid_int}: {resp.text[:120]}")
-                err += 1
-        except Exception as e:
-            print(f"  ПОМИЛКА ID {rid_int}: {e}")
-            err += 1
+        # Формуємо fields
+        fields = {}
+        if write_laureate and lau:
+            enum_id = LAUREATE_ENUM_ID.get(lau)
+            if enum_id:
+                fields["UF_CRM_1690186104647"] = enum_id
+        if write_comment and comment:
+            fields["UF_CRM_1702407283770"] = comment
 
-    print(f"Bitrix24: записано {ok}, помилок {err}, пропущено {skip}")
+        if not fields:
+            skip += 1
+            if progress_cb:
+                progress_cb(i + 1, total, r, "skip")
+            continue
+
+        try:
+            resp = requests.post(
+                endpoint,
+                json={"id": rid_int, "fields": fields},
+                timeout=15,
+            )
+            data = resp.json() if resp.ok else {}
+            if data.get("result"):
+                ok += 1
+                if progress_cb:
+                    progress_cb(i + 1, total, r, "ok")
+            else:
+                msg = resp.text[:200]
+                errors.append((rid_int, msg))
+                err += 1
+                if progress_cb:
+                    progress_cb(i + 1, total, r, f"err:{msg}")
+        except Exception as e:
+            errors.append((rid_int, str(e)))
+            err += 1
+            if progress_cb:
+                progress_cb(i + 1, total, r, f"err:{e}")
+
+    return {"ok": ok, "err": err, "skip": skip, "errors": errors}
 
 
 # ---------------------------------------------------------------------------

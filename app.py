@@ -277,19 +277,30 @@ st.divider()
 st.subheader(f"📊 Результати — {res_month}")
 st.caption(f"🕐 Останнє оновлення: **{updated_at}**")
 
-lau_cnt      = Counter(r["laureate"] for r in all_rows)
+lau_cnt       = Counter(r["laureate"] for r in all_rows)
 no_score_rows = [r for r in all_rows if r.get("raw_laureate") == "None"]
 conflict_groups, same_groups = find_duplicates(all_rows)
-dup_groups = {**conflict_groups, **same_groups}
+dup_groups    = {**conflict_groups, **same_groups}
+country_cnt   = Counter(r.get("country", "Україна") for r in all_rows)
+country_count = len(country_cnt)
 
 # Метрики
-m1,m2,m3,m4,m5,m6 = st.columns(6)
+m1,m2,m3,m4,m5,m6,m7 = st.columns(7)
 m1.metric("Всього",            len(all_rows))
-m2.metric("🥇 Gran Pri",       lau_cnt.get("Gran Pri",   0))
-m3.metric("🥈 1st degree",     lau_cnt.get("1st degree", 0))
-m4.metric("🥉 2nd degree",     lau_cnt.get("2nd degree", 0))
-m5.metric("🎖 3d degree",      lau_cnt.get("3d degree",  0))
-m6.metric("❓ Без оцінки→1st", len(no_score_rows))
+m2.metric("🌍 Країн",          country_count)
+m3.metric("🥇 Gran Pri",       lau_cnt.get("Gran Pri",   0))
+m4.metric("🥈 1st degree",     lau_cnt.get("1st degree", 0))
+m5.metric("🥉 2nd degree",     lau_cnt.get("2nd degree", 0))
+m6.metric("🎖 3d degree",      lau_cnt.get("3d degree",  0))
+m7.metric("❓ Без оцінки→1st", len(no_score_rows))
+
+# Розбивка по країнах
+if country_count > 1:
+    with st.expander(f"🌍 Країни ({country_count})"):
+        country_df = pd.DataFrame(
+            [{"Країна": c, "Учасників": n} for c, n in sorted(country_cnt.items(), key=lambda x: -x[1])]
+        )
+        st.dataframe(country_df, use_container_width=True, hide_index=True)
 
 if conflict_groups:
     st.error(f"🚨 **{len(conflict_groups)}** конфліктів — однаковий учасник+твір, різні оцінки! → вкладка «🚨 Конфлікти»")

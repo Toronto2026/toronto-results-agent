@@ -151,6 +151,27 @@ def _is_data_row(row_id, pib) -> bool:
     return True
 
 
+_COUNTRY_KEYWORDS = {
+    "Молдова":  ["moldav", "moldova", "moldovei", "кишинів", "kichinev", "chișinău",
+                 "молдов", "молдав", "kišinev"],
+    "Литва":    ["klaipėd", "vilnius", "lietuv", "kauna", "литв", "литов", "паневеж"],
+    "Польща":   ["poland", "warszawa", "kraków", "krakow", "польщ", "варшав", "польськ"],
+    "Германія": ["german", "berlin", "münchen", "hamburg", "нiмеч", "берлін"],
+    "Франція":  ["france", "paris", "lyon", "франц", "париж"],
+    "Ізраїль":  ["israel", "tel aviv", "ізраїл", "ізраілю"],
+    "Канада":   ["canada", "toronto", "montreal", "канад"],
+    "США":      ["usa", "united states", "new york", "сша", "америк"],
+}
+
+def detect_country(school: str) -> str:
+    """Визначає країну за назвою навчального закладу."""
+    sl = (school or "").lower()
+    for country, keywords in _COUNTRY_KEYWORDS.items():
+        if any(kw in sl for kw in keywords):
+            return country
+    return "Україна"
+
+
 def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
     """
     Читає один xlsx файл журі.
@@ -188,6 +209,7 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
         idx_nom  = col("Номінація")
         idx_vik  = col("Вікова категорія")
         idx_nazv = col("Назва або опис роботи") or col("Назва роботи")
+        idx_sch  = col("Назва навчального закладу")
         # Laureate або Ступінь (файли ДПМ)
         idx_lau  = col("Laureate") or col("Ступінь") or col("Оцінка") or col("Місце")
         idx_kom  = col("Коментар Журі") or col("Коментар журі")
@@ -231,12 +253,15 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
             if not nazva:
                 no_nazva_count += 1
 
+            school = str(row[idx_sch]).strip() if idx_sch is not None and row[idx_sch] else ""
             results.append({
                 "id":       rid,
                 "pib":      str(pib).strip() if pib else "",
                 "nom":      str(row[idx_nom]).strip()  if idx_nom  is not None and row[idx_nom]  else "",
                 "vik":      str(row[idx_vik]).strip()  if idx_vik  is not None and row[idx_vik]  else "",
                 "nazva":    str(nazva).strip() if nazva else "",
+                "school":   school,
+                "country":  detect_country(school),
                 "laureate": convert_laureate(lau_raw),
                 "raw_laureate": str(lau_raw) if lau_raw is not None else "None",
                 "comment":  str(row[idx_kom]).strip() if idx_kom is not None and row[idx_kom] else "",
@@ -467,6 +492,7 @@ _COL_ALIASES = {
     "nom":      ["номінація", "nomination"],
     "nazva":    ["назва або опис роботи", "назва або опис\nроботи", "назва роботи",
                  "назва композиції", "назва або опис", "назва"],
+    "school":   ["назва навчального закладу", "навчальний заклад", "школа", "school", "organization"],
     "laureate": ["laureate", "лауреат", "ступінь", "degree"],
 }
 
@@ -515,12 +541,15 @@ def import_results_from_excel(path: str) -> tuple[list[dict], list[str]]:
                 continue
             lau_raw = row[col_map["laureate"]] if "laureate" in col_map else None
             lau     = convert_laureate(lau_raw)
+            school  = str(row[col_map["school"]]).strip() if "school" in col_map and row[col_map["school"]] else ""
             rows.append({
                 "id":          str(row[col_map["id"]]).strip() if "id" in col_map and row[col_map["id"]] else "",
                 "pib":         str(pib).strip(),
                 "nom":         str(row[col_map["nom"]]).strip()   if "nom"   in col_map and row[col_map["nom"]]   else "",
                 "vik":         "",
                 "nazva":       str(row[col_map["nazva"]]).strip() if "nazva" in col_map and row[col_map["nazva"]] else "",
+                "school":      school,
+                "country":     detect_country(school),
                 "laureate":    lau,
                 "raw_laureate": str(lau_raw) if lau_raw is not None else "None",
                 "comment":     "",
@@ -588,12 +617,15 @@ def import_results_from_pdf(path: str) -> tuple[list[dict], list[str]]:
                         rid_raw = str(row[col_map["id"]] or "").strip()
                         rid = rid_raw if rid_raw.isdigit() else ""
 
+                    school = str(row[col_map["school"]] or "").replace("\n"," ").strip() if "school" in col_map else ""
                     rows.append({
                         "id":          rid,
                         "pib":         pib_s,
                         "nom":         str(row[col_map["nom"]] or "").replace("\n"," ").strip() if "nom"   in col_map else "",
                         "vik":         "",
                         "nazva":       str(row[col_map["nazva"]] or "").replace("\n"," ").strip() if "nazva" in col_map else "",
+                        "school":      school,
+                        "country":     detect_country(school),
                         "laureate":    lau,
                         "raw_laureate": lau_s or "None",
                         "comment":     "",

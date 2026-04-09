@@ -10,7 +10,8 @@ from collections import Counter, defaultdict
 import pandas as pd
 import streamlit as st
 
-from agent_results import build_pdf, read_jury_file, write_to_bitrix
+from agent_results import (build_pdf, read_jury_file, write_to_bitrix,
+                           import_results_from_excel, import_results_from_pdf)
 
 # ---------------------------------------------------------------------------
 # Конфігурація сторінки
@@ -105,27 +106,62 @@ def find_duplicates(rows):
     return conflicts, same
 
 # ---------------------------------------------------------------------------
-# РЕЖИМ 1: завантажити збережений JSON
+# РЕЖИМ 1: завантажити результати попереднього конкурсу (JSON / XLSX / PDF)
 # ---------------------------------------------------------------------------
-st.subheader("📂 Завантажити збережені результати")
-json_file = st.file_uploader(
-    "Завантажте результати попереднього конкурсу (JSON)",
-    type=["json"], key="json_upload",
-    help="Файл генерується при кожному формуванні результатів"
+st.subheader("📂 Завантажити результати попереднього конкурсу")
+
+prev_file = st.file_uploader(
+    "JSON (збережений агентом) · XLSX · PDF",
+    type=["json", "xlsx", "pdf"],
+    key="prev_upload",
+    help="Завантажте результати будь-якого попереднього конкурсу",
 )
 
 loaded_rows = None
 loaded_meta = {}
-if json_file:
+
+if prev_file:
+    ext = prev_file.name.rsplit(".", 1)[-1].lower()
     try:
-        data = json.loads(json_file.read().decode("utf-8"))
-        loaded_rows = json_to_rows(data)
-        loaded_meta = {k:v for k,v in data.items() if k != "results"}
-        upd = loaded_meta.get("updated_at","—")
-        mon = loaded_meta.get("month","—")
-        st.success(f"✅ Завантажено **{len(loaded_rows)}** учасників | Конкурс: **{mon}** | Оновлено: **{upd}**")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(prev_file.read())
+            tmp_path = tmp.name
+
+        if ext == "json":
+            data = json.loads(open(tmp_path, encoding="utf-8").read())
+            loaded_rows = json_to_rows(data)
+            loaded_meta = {k: v for k, v in data.items() if k != "results"}
+
+        elif ext == "xlsx":
+            loaded_rows, imp_log = import_results_from_excel(tmp_path)
+            loaded_meta = {"month": month}
+            with st.expander("Лог імпорту Excel"):
+                for line in imp_log:
+                    st.text(line)
+
+        elif ext == "pdf":
+            loaded_rows, imp_log = import_results_from_pdf(tmp_path)
+            loaded_meta = {"month": month}
+            with st.expander("Лог імпорту PDF"):
+                for line in imp_log:
+                    st.text(line)
+
+        os.unlink(tmp_path)
+
+        if loaded_rows:
+            upd = loaded_meta.get("updated_at", "—")
+            mon = loaded_meta.get("month", "—")
+            st.success(
+                f"✅ Завантажено **{len(loaded_rows)}** учасників"
+                + (f" | Конкурс: **{mon}**" if mon != "—" else "")
+                + (f" | Оновлено: **{upd}**" if upd != "—" else "")
+            )
+        else:
+            st.error("Не вдалося знайти рядки результатів у файлі. "
+                     "Перевір формат: потрібні колонки ID, ПІБ Учасника, Laureate.")
+
     except Exception as e:
-        st.error(f"Помилка читання JSON: {e}")
+        st.error(f"Помилка читання файлу: {e}")
         loaded_rows = None
 
 st.divider()

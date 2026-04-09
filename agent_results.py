@@ -456,6 +456,154 @@ def build_pdf(rows: list[dict], output_path: str, month: str, publish_date: str 
 
 
 # ---------------------------------------------------------------------------
+# Імпорт результатів з PDF або Excel попереднього конкурсу
+# ---------------------------------------------------------------------------
+
+# Стандартні назви колонок результатів (варіанти написання)
+_COL_ALIASES = {
+    "id":       ["id"],
+    "pib":      ["піб учасника", "пib учасника", "учасник", "artist", "піб", "pib"],
+    "nom":      ["номінація", "nomination"],
+    "nazva":    ["назва або опис роботи", "назва або опис\nроботи", "назва роботи",
+                 "назва композиції", "назва або опис", "назва"],
+    "laureate": ["laureate", "лауреат", "ступінь", "degree"],
+}
+
+def _match_col(header: str) -> str | None:
+    """Повертає ключ поля для заголовку колонки або None."""
+    h = header.strip().lower().replace("\n", " ")
+    for key, aliases in _COL_ALIASES.items():
+        if any(h == a or h.startswith(a) for a in aliases):
+            return key
+    return None
+
+
+def import_results_from_excel(path: str) -> tuple[list[dict], list[str]]:
+    """
+    Читає таблицю результатів з xlsx.
+    Підтримує формат: ID | ПІБ Учасника | Номінація | Назва або опис роботи | Laureate
+    Повертає (рядки, лог).
+    """
+    import openpyxl
+    fname = os.path.basename(path)
+    log   = [f"📂 Excel: {fname}"]
+    wb    = openpyxl.load_workbook(path)
+    rows  = []
+
+    for sh in wb.sheetnames:
+        ws = wb[sh]
+        if not hasattr(ws, "iter_rows"):
+            continue
+        headers_raw = [str(c.value).strip() if c.value else "" for c in ws[1]]
+        col_map = {}   # key -> column_index
+        for i, h in enumerate(headers_raw):
+            key = _match_col(h)
+            if key and key not in col_map:
+                col_map[key] = i
+
+        log.append(f"  Аркуш '{sh}' | знайдено колонки: {list(col_map.keys())}")
+
+        if "pib" not in col_map or "laureate" not in col_map:
+            log.append(f"  🚫 Пропущено — немає обов'язкових колонок ПІБ / Laureate")
+            continue
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            pib = row[col_map["pib"]] if "pib" in col_map else None
+            if not pib or str(pib).strip().lower().startswith(
+                    ("сума","гонорар","разом","total","підсумок","laureate","піб")):
+                continue
+            lau_raw = row[col_map["laureate"]] if "laureate" in col_map else None
+            lau     = convert_laureate(lau_raw)
+            rows.append({
+                "id":          str(row[col_map["id"]]).strip() if "id" in col_map and row[col_map["id"]] else "",
+                "pib":         str(pib).strip(),
+                "nom":         str(row[col_map["nom"]]).strip()   if "nom"   in col_map and row[col_map["nom"]]   else "",
+                "vik":         "",
+                "nazva":       str(row[col_map["nazva"]]).strip() if "nazva" in col_map and row[col_map["nazva"]] else "",
+                "laureate":    lau,
+                "raw_laureate": str(lau_raw) if lau_raw is not None else "None",
+                "comment":     "",
+                "source":      fname,
+            })
+
+    log.append(f"  ✅ Імпортовано: {len(rows)} рядків")
+    return rows, log
+
+
+def import_results_from_pdf(path: str) -> tuple[list[dict], list[str]]:
+    """
+    Читає таблицю результатів з PDF (формат Toronto).
+    Підтримує PDF згенеровані агентом результатів.
+    Повертає (рядки, лог).
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return [], ["❌ pdfplumber не встановлений: pip install pdfplumber"]
+
+    fname = os.path.basename(path)
+    log   = [f"📂 PDF: {fname}"]
+    rows  = []
+    col_map = {}
+
+    with pdfplumber.open(path) as pdf:
+        log.append(f"  Сторінок: {len(pdf.pages)}")
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                if not table:
+                    continue
+                for row in table:
+                    if not row:
+                        continue
+                    # Перший рядок з відомими заголовками → будуємо col_map
+                    if not col_map:
+                        candidate = {_match_col(str(c or "")): i
+                                     for i, c in enumerate(row)
+                                     if _match_col(str(c or ""))}
+                        if "pib" in candidate and "laureate" in candidate:
+                            col_map = candidate
+                            log.append(f"  Знайдено заголовки: {list(col_map.keys())}")
+                            continue
+                        # Повторний заголовок на новій сторінці — пропускаємо
+                        if col_map and _match_col(str(row[col_map.get("pib",1)] or "")) == "pib":
+                            continue
+
+                    if not col_map:
+                        continue
+
+                    pib = row[col_map["pib"]] if "pib" in col_map else None
+                    if not pib:
+                        continue
+                    pib_s = str(pib).replace("\n"," ").strip()
+                    if not pib_s or pib_s.lower() in ("піб учасника","artist","—",""):
+                        continue
+
+                    lau_raw = row[col_map["laureate"]] if "laureate" in col_map else None
+                    lau_s   = str(lau_raw or "").replace("\n"," ").strip()
+                    lau     = convert_laureate(lau_s) if lau_s else "1st degree"
+
+                    rid = ""
+                    if "id" in col_map:
+                        rid_raw = str(row[col_map["id"]] or "").strip()
+                        rid = rid_raw if rid_raw.isdigit() else ""
+
+                    rows.append({
+                        "id":          rid,
+                        "pib":         pib_s,
+                        "nom":         str(row[col_map["nom"]] or "").replace("\n"," ").strip() if "nom"   in col_map else "",
+                        "vik":         "",
+                        "nazva":       str(row[col_map["nazva"]] or "").replace("\n"," ").strip() if "nazva" in col_map else "",
+                        "laureate":    lau,
+                        "raw_laureate": lau_s or "None",
+                        "comment":     "",
+                        "source":      fname,
+                    })
+
+    log.append(f"  ✅ Імпортовано: {len(rows)} рядків")
+    return rows, log
+
+
+# ---------------------------------------------------------------------------
 # Запис у Bitrix24
 # ---------------------------------------------------------------------------
 

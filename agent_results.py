@@ -350,12 +350,12 @@ def build_pdf(rows: list[dict], output_path: str, month: str, publish_date: str 
     sorted_rows = sorted(rows, key=lambda r: r["pib"].lower())
 
     # Будуємо таблицю
-    col_widths = [1.4*cm, 6.0*cm, 4.0*cm, 4.5*cm, 2.8*cm]
+    col_widths = [1.3*cm, 5.5*cm, 3.8*cm, 5.0*cm, 2.8*cm]
     table_data = [[
         Paragraph("ID",             bold_style),
         Paragraph("ПІБ Учасника",   bold_style),
         Paragraph("Номінація",      bold_style),
-        Paragraph("Назва твору",    bold_style),
+        Paragraph("Назва або опис роботи", bold_style),
         Paragraph("Laureate",       bold_style),
     ]]
 

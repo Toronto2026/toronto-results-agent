@@ -350,23 +350,26 @@ def build_pdf(rows: list[dict], output_path: str, month: str, publish_date: str 
     sorted_rows = sorted(rows, key=lambda r: r["pib"].lower())
 
     # Будуємо таблицю
-    col_widths = [1.4*cm, 7.0*cm, 5.0*cm, 3.0*cm]
+    col_widths = [1.4*cm, 6.0*cm, 4.0*cm, 4.5*cm, 2.8*cm]
     table_data = [[
-        Paragraph("ID",           bold_style),
-        Paragraph("ПІБ Учасника", bold_style),
-        Paragraph("Номінація",    bold_style),
-        Paragraph("Laureate",     bold_style),
+        Paragraph("ID",             bold_style),
+        Paragraph("ПІБ Учасника",   bold_style),
+        Paragraph("Номінація",      bold_style),
+        Paragraph("Назва твору",    bold_style),
+        Paragraph("Laureate",       bold_style),
     ]]
 
     row_colors = []  # (row_idx, color)
     for i, r in enumerate(sorted_rows, start=1):
-        lau = r["laureate"]
-        bg  = LAUREATE_COLORS.get(lau, colors.white)
+        lau   = r["laureate"]
+        nazva = r.get("nazva", "") or ""
+        bg    = LAUREATE_COLORS.get(lau, colors.white)
         row_colors.append((i, bg))
         table_data.append([
             Paragraph(str(r["id"]) if r["id"] else "—", cell_style),
             Paragraph(r["pib"],   cell_style),
             Paragraph(r["nom"],   cell_style),
+            Paragraph(nazva,      cell_style),
             Paragraph(lau,        bold_style if lau == "Gran Pri" else cell_style),
         ])
 

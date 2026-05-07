@@ -44,7 +44,18 @@ with st.sidebar:
     bx_write_lau = st.checkbox("Записати Laureate",      value=True)
     bx_write_com = st.checkbox("Записати Коментар Журі", value=True)
     st.divider()
-    st.caption("v2.0 · agent_results.py")
+    st.subheader("🔢 Перевірка кількості")
+    expected_count = st.number_input(
+        "Очікувана кількість учасників (з Bitrix)",
+        min_value=0, max_value=10000, value=0, step=1,
+        help="Введіть кількість угод у Bitrix24 для поточного конкурсу. "
+             "Агент порівняє і попередить якщо є розбіжність.",
+        key="expected_count",
+    )
+    if expected_count:
+        st.caption(f"Очікується: **{expected_count}** учасників")
+    st.divider()
+    st.caption("v2.1 · agent_results.py")
 
 # ---------------------------------------------------------------------------
 # Заголовок
@@ -84,16 +95,31 @@ def build_df(rows):
     } for r in sorted(rows, key=lambda x: x.get("pib","").lower())])
 
 def dedup_by_id(rows):
-    seen, out, count = {}, [], 0
+    """
+    Видаляє дублікати по ID.
+    Повертає (дедубліковані рядки, кількість видалених, список конфліктів).
+    Конфлікт = той самий ID, але різні значення Laureate.
+    """
+    seen_rows: dict = {}   # rid -> перший зустрінутий рядок
+    out, removed, conflicts = [], 0, []
     for r in rows:
         rid = str(r.get("id","")).strip()
         if rid and rid not in ("None","—",""):
-            if rid in seen:
-                count += 1
+            if rid in seen_rows:
+                removed += 1
+                # перевіряємо конфлікт оцінок
+                first = seen_rows[rid]
+                if first.get("laureate") != r.get("laureate"):
+                    conflicts.append({
+                        "id":  rid,
+                        "pib": r.get("pib",""),
+                        "lau1": first.get("laureate",""), "src1": first.get("source",""),
+                        "lau2": r.get("laureate",""),     "src2": r.get("source",""),
+                    })
                 continue
-            seen[rid] = True
+            seen_rows[rid] = r
         out.append(r)
-    return out, count
+    return out, removed, conflicts
 
 def find_duplicates(rows):
     groups = defaultdict(list)
@@ -218,12 +244,51 @@ if run_btn and uploaded:
             status.update(label="Помилка!", state="error")
             st.stop()
 
-        all_rows, dedup_count = dedup_by_id(all_rows)
-        if dedup_count:
-            st.warning(f"⚠️ Видалено дублів по ID: **{dedup_count}**")
+        all_rows, dedup_count, id_conflicts = dedup_by_id(all_rows)
 
+        # --- Повідомлення про дублікати ---
+        if dedup_count:
+            st.warning(f"⚠️ Знайдено і видалено **{dedup_count}** дублів по ID (один учасник у двох файлах або двічі в одному файлі)")
+
+        # --- Конфлікти оцінок (той самий ID, різні оцінки!) ---
+        if id_conflicts:
+            st.error(f"🚨 **КОНФЛІКТ ОЦІНОК: {len(id_conflicts)} учасника(ів) мають різні оцінки в різних файлах!**")
+            with st.expander("🚨 Переглянути конфлікти (потрібно виправити вручну)", expanded=True):
+                for c in id_conflicts:
+                    st.markdown(
+                        f"**ID {c['id']} — {c['pib']}**  \n"
+                        f"▸ `{c['lau1']}` (з файлу: {c['src1']})  \n"
+                        f"▸ `{c['lau2']}` (з файлу: {c['src2']})  \n"
+                        f"⚠️ *Залишено першу оцінку. Перевірте і виправте у вхідному файлі.*"
+                    )
+            # зберігаємо для відображення після обробки
+            st.session_state["id_conflicts"] = id_conflicts
+        else:
+            st.session_state.pop("id_conflicts", None)
+
+        # --- Перевірка кількості vs очікувана ---
+        expected = st.session_state.get("expected_count", 0)
         total_none = sum(1 for r in all_rows if r.get("raw_laureate") == "None")
-        st.write(f"📊 Всього учасників: **{len(all_rows)}**")
+        st.write(f"📊 Всього учасників після дедублікації: **{len(all_rows)}**"
+                 + (f" | Очікується: **{expected}**" if expected else ""))
+        if expected and len(all_rows) != expected:
+            diff = expected - len(all_rows)
+            if diff > 0:
+                st.error(
+                    f"🚨 **УВАГА! Кількість не збігається!**  \n"
+                    f"У файлах журі: **{len(all_rows)}** учасників  \n"
+                    f"У Bitrix24: **{expected}** угод  \n"
+                    f"**Відсутні оцінки: {diff} учасника(ів)** — перевірте чи всі файли журі завантажені!"
+                )
+            else:
+                st.warning(
+                    f"⚠️ Файли журі містять більше учасників ніж у Bitrix:  \n"
+                    f"У файлах: **{len(all_rows)}**, у Bitrix: **{expected}**  \n"
+                    f"Зайвих: **{abs(diff)}** — можливо дублікати або некоректні ID"
+                )
+        elif expected and len(all_rows) == expected:
+            st.success(f"✅ Кількість збігається: **{len(all_rows)}** учасників")
+
         if all_rows and total_none / len(all_rows) > 0.8:
             st.error(f"⛔ {total_none}/{len(all_rows)} без оцінки — файли до оцінювання!")
 
@@ -301,10 +366,42 @@ if country_count > 1:
         )
         st.dataframe(country_df, use_container_width=True, hide_index=True)
 
+# Конфлікти по ID (з дедублікації — різні оцінки для того самого ID)
+id_conflicts = st.session_state.get("id_conflicts", [])
+if id_conflicts:
+    st.error(f"🚨 **КОНФЛІКТ ОЦІНОК: {len(id_conflicts)} учасника(ів)** — той самий ID, різні оцінки!")
+    with st.expander("🚨 Конфлікти по ID — виправте вручну у вхідних файлах"):
+        for c in id_conflicts:
+            st.markdown(
+                f"**ID {c['id']} — {c['pib']}**  \n"
+                f"▸ `{c['lau1']}` (файл: {c['src1']})  \n"
+                f"▸ `{c['lau2']}` (файл: {c['src2']})  \n"
+                "⚠️ *Залишено першу оцінку. Виправте у вхідному файлі та перезавантажте.*"
+            )
+
+# Конфлікти PIB+Назва (різні файли)
 if conflict_groups:
     st.error(f"🚨 **{len(conflict_groups)}** конфліктів — однаковий учасник+твір, різні оцінки! → вкладка «🚨 Конфлікти»")
 elif dup_groups:
     st.warning(f"🔁 **{len(dup_groups)}** дублів (однакові оцінки) → вкладка «🔁 Дублі»")
+
+# Перевірка кількості vs Bitrix
+expected = st.session_state.get("expected_count", 0)
+if expected:
+    diff = expected - len(all_rows)
+    if diff > 0:
+        st.error(
+            f"🚨 **ВІДСУТНІ ОЦІНКИ!**  \n"
+            f"У файлах журі: **{len(all_rows)}** учасників | У Bitrix: **{expected}**  \n"
+            f"**Не вистачає: {diff} учасника(ів)** — перевірте чи всі файли журі завантажені!"
+        )
+    elif diff < 0:
+        st.warning(
+            f"⚠️ У файлах журі більше учасників ніж у Bitrix  \n"
+            f"Файли: **{len(all_rows)}** | Bitrix: **{expected}** | Зайвих: **{abs(diff)}**"
+        )
+    else:
+        st.success(f"✅ Кількість збігається з Bitrix: **{len(all_rows)}** учасників")
 
 # Кнопки завантаження
 safe_month = res_month.replace(" ", "_")

@@ -138,16 +138,24 @@ def convert_laureate(value) -> str:
 # ---------------------------------------------------------------------------
 # Читання файлів журі
 # ---------------------------------------------------------------------------
-SKIP_PIB_PREFIXES = ("сума", "гонорар", "разом", "total", "підсумок")
+SKIP_PIB_PREFIXES = ("сума", "гонорар", "разом", "total", "підсумок", "итого", "разом гонорар")
 
 def _is_data_row(row_id, pib) -> bool:
-    """Повертає True якщо рядок є учасником, а не технічним."""
+    """Повертає True якщо рядок є учасником, а не технічним (підсумок, гонорар тощо)."""
+    # Перевіряємо PIB
     if pib is None:
         return False
     pib_s = str(pib).strip().lower()
     for prefix in SKIP_PIB_PREFIXES:
         if pib_s.startswith(prefix):
             return False
+    # Перевіряємо ID — якщо це текст (не число) і містить технічні слова → пропускаємо
+    if row_id is not None:
+        rid_s = str(row_id).strip().lower()
+        if not rid_s.isdigit():  # якщо ID — не чисто число
+            for prefix in SKIP_PIB_PREFIXES:
+                if prefix in rid_s:
+                    return False
     return True
 
 

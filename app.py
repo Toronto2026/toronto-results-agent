@@ -517,8 +517,10 @@ with tabs[0]:
 
 with tabs[1]:
     gp = df[df["Laureate"] == "Gran Pri"]
-    st.dataframe(gp.style.map(color_cell, subset=["Laureate"]),
-                 use_container_width=True) if len(gp) else st.info("Жодного Gran Pri")
+    if len(gp):
+        st.dataframe(gp.style.map(color_cell, subset=["Laureate"]), use_container_width=True)
+    else:
+        st.info("Жодного Gran Pri")
 
 with tabs[2]:
     if not conflict_groups:
@@ -527,7 +529,8 @@ with tabs[2]:
         st.error(f"🚨 {len(conflict_groups)} конфліктів — потрібне ручне рішення!")
         for (p,n), grp in sorted(conflict_groups.items()):
             lau_vals = " / ".join(sorted(set(r["laureate"] for r in grp)))
-            st.markdown(f"**{grp[0]['pib']}** | *{grp[0].get('nazva','') or '—'}* → `{lau_vals}`")
+            ids_str = " / ".join(str(r["id"]) for r in grp)
+            st.markdown(f"**{grp[0]['pib']}** | ID: `{ids_str}` | *{grp[0].get('nazva','') or '—'}* → `{lau_vals}`")
             st.dataframe(build_df(grp).style.map(color_cell, subset=["Laureate"]),
                          use_container_width=True)
             st.divider()

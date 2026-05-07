@@ -170,18 +170,17 @@ st.divider()
 # РЕЖИМ 2: завантажити файли журі
 # ---------------------------------------------------------------------------
 st.subheader("📋 Або завантажте нові файли від журі")
-col1, col2, col3 = st.columns(3)
-with col1:
-    file1 = st.file_uploader("Журі №1 (Лариса)", type=["xlsx"], key="jury1")
-with col2:
-    file2 = st.file_uploader("Журі №2 (Світлана)", type=["xlsx"], key="jury2")
-with col3:
-    file3 = st.file_uploader("Журі №3 (ДПМ)", type=["xlsx"], key="jury3")
+st.caption("Можна вибрати всі файли одночасно (Ctrl+клік або Shift+клік)")
 
-uploaded = [f for f in [file1, file2, file3] if f is not None]
+uploaded = st.file_uploader(
+    "Файли від членів журі (.xlsx) — будь-яка кількість",
+    type=["xlsx"],
+    accept_multiple_files=True,
+    key="jury_files",
+)
 
 run_btn = st.button(
-    "▶️ Сформувати результати з файлів журі",
+    f"▶️ Сформувати результати з файлів журі{f' ({len(uploaded)} файлів)' if uploaded else ''}",
     type="primary",
     disabled=len(uploaded) == 0,
 )

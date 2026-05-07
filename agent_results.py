@@ -207,12 +207,15 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
         idx_id   = col("ID")
         idx_pib  = col("ПІБ Учасника")
         idx_nom  = col("Номінація")
-        idx_vik  = col("Вікова категорія")
+        idx_vik  = col("Вікова категорія") or col("Вік")
         idx_nazv = col("Назва або опис роботи") or col("Назва роботи")
         idx_sch  = col("Назва навчального закладу")
-        # Laureate або Ступінь (файли ДПМ)
-        idx_lau  = col("Laureate") or col("Ступінь") or col("Оцінка") or col("Місце")
+        # Laureate: стандартний файл журі, файли ДПМ, зведений файл (ПІДСУМОК)
+        idx_lau  = (col("Laureate") or col("ПІДСУМОК") or col("Підсумок")
+                    or col("Ступінь") or col("Оцінка") or col("Місце"))
+        # Коментар: один або два окремих члени журі
         idx_kom  = col("Коментар Журі") or col("Коментар журі")
+        idx_kom2 = col("Коментар Лариси") or col("Коментар Ірини") or col("Коментар 1")
 
         # Лог знайдених/відсутніх колонок
         col_status = []
@@ -254,6 +257,25 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
                 no_nazva_count += 1
 
             school = str(row[idx_sch]).strip() if idx_sch is not None and row[idx_sch] else ""
+
+            # Збираємо коментар: один або два окремих стовпці → об'єднуємо
+            def _get_comment(idx):
+                if idx is None or row[idx] is None:
+                    return ""
+                v = str(row[idx]).strip()
+                return "" if v.lower() in ("nan", "none", "-", "") else v
+
+            comment_parts = [_get_comment(idx_kom)]
+            if idx_kom2 is not None and idx_kom2 != idx_kom:
+                # шукаємо обидва варіанти: Коментар Лариси і Коментар Ірини
+                for cname in ["Коментар Лариси", "Коментар Ірини", "Коментар 1", "Коментар 2"]:
+                    cidx = col(cname)
+                    if cidx is not None and cidx != idx_kom:
+                        v = _get_comment(cidx)
+                        if v:
+                            comment_parts.append(v)
+            comment = " | ".join(p for p in comment_parts if p)
+
             results.append({
                 "id":       rid,
                 "pib":      str(pib).strip() if pib else "",
@@ -264,7 +286,7 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
                 "country":  detect_country(school),
                 "laureate": convert_laureate(lau_raw),
                 "raw_laureate": str(lau_raw) if lau_raw is not None else "None",
-                "comment":  str(row[idx_kom]).strip() if idx_kom is not None and row[idx_kom] else "",
+                "comment":  comment,
                 "source":   fname,
             })
 

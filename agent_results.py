@@ -317,6 +317,152 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
     return results, log
 
 
+def read_bitrix_supplement(path: str) -> tuple[list[dict], list[str]]:
+    """
+    Читає Bitrix24 XLS/XLSX-експорт і повертає ТІЛЬКИ рядки,
+    де колонка Лауреат/Laureate вже заповнена.
+
+    Це «доповнення» — для учасників, яких оцінили прямо в угоді Bitrix24
+    (не через файл журі). Такі рядки мають нижчий пріоритет:
+    якщо той самий ID є і в файлах журі, журі перемагає (dedup_by_id
+    залишає перший запис — з файлу журі).
+
+    Підтримує:
+    - .xlsx  — справжній Excel
+    - .xls   — HTML-таблиця з BOM, яку Bitrix24 видає як .xls
+    """
+    fname = os.path.basename(path)
+    log   = [f"📂 Bitrix-доповнення: {fname}"]
+
+    try:
+        import pandas as pd
+        import io as _io
+    except ImportError:
+        log.append("  ❌ pandas не встановлений: pip install pandas")
+        return [], log
+
+    ext = fname.rsplit(".", 1)[-1].lower()
+    df: "pd.DataFrame | None" = None
+
+    try:
+        if ext == "xlsx":
+            df = pd.read_excel(path, dtype=str)
+        else:
+            # Bitrix24 видає XLS як HTML з UTF-8 BOM
+            with open(path, "rb") as fh:
+                content = fh.read()
+            if content.startswith(b"\xef\xbb\xbf"):
+                content = content[3:]
+            try:
+                tables = pd.read_html(_io.BytesIO(content), encoding="utf-8")
+                if tables:
+                    df = tables[0].astype(str)
+            except Exception:
+                pass
+            if df is None:
+                # Запасний варіант — справжній XLS (xlrd)
+                df = pd.read_excel(path, dtype=str)
+    except Exception as e:
+        log.append(f"  ❌ Помилка читання файлу: {e}")
+        return [], log
+
+    if df is None or df.empty:
+        log.append("  ❌ Файл порожній або не вдалося прочитати")
+        return [], log
+
+    log.append(f"  📋 Рядків: {len(df)} | Колонок: {len(df.columns)}")
+    log.append(f"     Колонки: {list(df.columns)}")
+
+    # --- Автодетекція потрібних колонок (регістронезалежно) ---
+    col_lower = {str(c).strip().lower(): c for c in df.columns}
+
+    def _find(keywords):
+        """Повертає першу колонку, ім'я якої містить будь-яке з keywords."""
+        for kw in keywords:
+            for cl, orig in col_lower.items():
+                if kw in cl:
+                    return orig
+        return None
+
+    id_col  = _find(["# угоди", "номер угоди", "deal id", "id угоди"])
+    # якщо не знайшли специфічні — пробуємо просто "id"
+    if id_col is None:
+        id_col = _find(["id"])
+
+    pib_col = _find(["піб учасника", "пib учасника", "учасник",
+                     "назва контакту", "контакт", "піб", "pib"])
+    # Для Bitrix: "назва" може бути заголовком угоди
+    if pib_col is None:
+        pib_col = _find(["назва"])
+
+    lau_col = _find(["лауреат", "laureate", "ступінь", "оцінка", "степень"])
+    nom_col = _find(["номінація", "nomination"])
+
+    log.append(
+        f"     ID→'{id_col}' | ПІБ→'{pib_col}' | "
+        f"Лауреат→'{lau_col}' | Номінація→'{nom_col}'"
+    )
+
+    if pib_col is None or lau_col is None:
+        log.append(
+            "  ❌ Не знайдено обов'язкові колонки 'ПІБ' або 'Лауреат'. "
+            "Перевірте формат Bitrix-експорту."
+        )
+        return [], log
+
+    # --- Збираємо рядки де Лауреат заповнений ---
+    rows       = []
+    cnt_skip   = 0
+    seen_ids: set = set()
+
+    for _, brow in df.iterrows():
+        lau_raw = str(brow[lau_col]).strip()
+        if not lau_raw or lau_raw.lower() in ("nan", "none", "-", "—", ""):
+            cnt_skip += 1
+            continue
+
+        pib = str(brow[pib_col]).strip()
+        if not pib or pib.lower() in ("nan", "none", ""):
+            cnt_skip += 1
+            continue
+
+        rid = ""
+        if id_col is not None:
+            rid = str(brow[id_col]).strip()
+            if rid.lower() in ("nan", "none"):
+                rid = ""
+            # Дедублікація усередині файлу — один рядок на угоду
+            if rid and rid in seen_ids:
+                cnt_skip += 1
+                continue
+            if rid:
+                seen_ids.add(rid)
+
+        nom = ""
+        if nom_col is not None:
+            nom = str(brow[nom_col]).strip()
+            if nom.lower() in ("nan", "none"):
+                nom = ""
+
+        rows.append({
+            "id":           rid,
+            "pib":          pib,
+            "nom":          nom,
+            "vik":          "",
+            "nazva":        "",
+            "school":       "",
+            "country":      "Україна",
+            "laureate":     convert_laureate(lau_raw),
+            "raw_laureate": lau_raw,
+            "comment":      "",
+            "source":       f"[Bitrix] {fname}",
+        })
+
+    log.append(f"  ✅ Імпортовано (з оцінками): {len(rows)}")
+    log.append(f"  ⏭ Пропущено (без оцінки або дублікати): {cnt_skip}")
+    return rows, log
+
+
 def read_all_jury_with_log(folder: str) -> tuple[list[dict], list[str]]:
     """Читає всі xlsx файли у папці. Повертає (рядки, повний лог)."""
     all_rows = []

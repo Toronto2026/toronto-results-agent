@@ -11,7 +11,8 @@ import pandas as pd
 import streamlit as st
 
 from agent_results import (build_pdf, read_jury_file, write_to_bitrix,
-                           import_results_from_excel, import_results_from_pdf)
+                           import_results_from_excel, import_results_from_pdf,
+                           read_bitrix_supplement)
 
 # ---------------------------------------------------------------------------
 # Конфігурація сторінки
@@ -55,7 +56,7 @@ with st.sidebar:
     if expected_count:
         st.caption(f"Очікується: **{expected_count}** учасників")
     st.divider()
-    st.caption("v2.1 · agent_results.py")
+    st.caption("v2.2 · agent_results.py")
 
 # ---------------------------------------------------------------------------
 # Заголовок
@@ -205,8 +206,33 @@ uploaded = st.file_uploader(
     key="jury_files",
 )
 
+st.divider()
+
+# ---------------------------------------------------------------------------
+# РЕЖИМ 2б: доповнення з Bitrix24 (оцінки поставлені напряму в угодах)
+# ---------------------------------------------------------------------------
+with st.expander("📤 Доповнення з Bitrix24 — учасники оцінені напряму в угодах (необов'язково)"):
+    st.caption(
+        "Якщо ви або члени журі ставили оцінки прямо в угодах Bitrix24 — "
+        "завантажте XLS/XLSX-експорт звідти. "
+        "**Агент візьме лише рядки, де Лауреат заповнений**, і додасть їх до загального списку.  \n"
+        "⚠️ Якщо учасник є і у файлі журі, і тут — **пріоритет має файл журі**."
+    )
+    bitrix_supplement_file = st.file_uploader(
+        "Bitrix24-експорт (.xls або .xlsx)",
+        type=["xls", "xlsx"],
+        key="bitrix_supplement",
+        help="Завантажте Bitrix XLS-експорт угод поточного конкурсу",
+    )
+    if bitrix_supplement_file:
+        st.info(
+            f"📎 Файл завантажено: **{bitrix_supplement_file.name}** — "
+            "буде оброблений разом з файлами журі при натисканні кнопки нижче."
+        )
+
 run_btn = st.button(
-    f"▶️ Сформувати результати з файлів журі{f' ({len(uploaded)} файлів)' if uploaded else ''}",
+    f"▶️ Сформувати результати з файлів журі{f' ({len(uploaded)} файлів)' if uploaded else ''}"
+    + (" + Bitrix24" if st.session_state.get("bitrix_supplement") else ""),
     type="primary",
     disabled=len(uploaded) == 0,
 )
@@ -243,6 +269,34 @@ if run_btn and uploaded:
             st.error("Не знайдено жодного рядка!")
             status.update(label="Помилка!", state="error")
             st.stop()
+
+        # --- Доповнення з Bitrix24 (нижчий пріоритет — додаємо ПІСЛЯ) ---
+        supplement_file = st.session_state.get("bitrix_supplement")
+        if supplement_file is not None:
+            st.write(f"📤 Читаю Bitrix-доповнення: {supplement_file.name}...")
+            try:
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    suffix="." + supplement_file.name.rsplit(".", 1)[-1].lower()
+                ) as tmp_bx:
+                    tmp_bx.write(supplement_file.read())
+                    tmp_bx_path = tmp_bx.name
+                bx_rows, bx_log = read_bitrix_supplement(tmp_bx_path)
+                os.unlink(tmp_bx_path)
+                full_log.extend(bx_log + [""])
+                if bx_rows:
+                    st.write(
+                        f"   ✅ Bitrix-доповнення: **{len(bx_rows)}** учасників з оцінками "
+                        f"(будуть додані тільки ті, яких немає у файлах журі)"
+                    )
+                    all_rows.extend(bx_rows)   # ← ПІСЛЯ журі → нижчий пріоритет
+                else:
+                    st.write("   ℹ️ Bitrix-доповнення: жодного рядка з оцінками не знайдено")
+                with st.expander("Лог Bitrix-доповнення"):
+                    for line in bx_log:
+                        st.text(line)
+            except Exception as e:
+                st.warning(f"⚠️ Помилка читання Bitrix-доповнення: {e}")
 
         all_rows, dedup_count, id_conflicts = dedup_by_id(all_rows)
 

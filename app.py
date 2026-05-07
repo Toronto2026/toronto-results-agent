@@ -84,7 +84,13 @@ def color_cell(val):
          "3d degree":"background-color:#E1BEE7"}
     return m.get(val, "")
 
+_DF_COLUMNS = ["ID", "ПІБ Учасника", "Номінація", "Назва роботи", "Laureate", "Коментар", "Файл журі"]
+
 def build_df(rows):
+    if not rows:
+        # Повертаємо порожній DataFrame з правильними колонками,
+        # щоб df.style.map(subset=["Laureate"]) не падав з KeyError
+        return pd.DataFrame(columns=_DF_COLUMNS)
     return pd.DataFrame([{
         "ID":            r.get("id") or "—",
         "ПІБ Учасника":  r.get("pib",""),

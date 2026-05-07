@@ -184,7 +184,14 @@ def read_jury_file(path: str) -> tuple[list[dict], list[str]]:
     wb = openpyxl.load_workbook(path)
     results = []
 
+    # Службові аркуші зведених файлів — пропускаємо
+    _SKIP_SHEETS = {"розбіжності", "розбіжності", "статистика", "statistics",
+                    "summary", "підсумки", "зведення", "conflicts", "diff"}
+
     for sheet_name in wb.sheetnames:
+        if sheet_name.strip().lower() in _SKIP_SHEETS:
+            log.append(f"  ⏭️ Аркуш '{sheet_name}': службовий, пропущено")
+            continue
         try:
             ws = wb[sheet_name]
         except Exception as e:

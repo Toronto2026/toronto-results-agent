@@ -383,11 +383,16 @@ if loaded_rows is not None:
 if "all_rows" not in st.session_state:
     st.stop()
 
-all_rows    = st.session_state["all_rows"]
+# Використовуємо .get() як запасний захист — у деяких версіях Streamlit
+# st.stop() не гарантовано зупиняє виконання (Python 3.13 / Railway)
+all_rows    = st.session_state.get("all_rows") or []
 full_log    = st.session_state.get("full_log", [])
 pdf_bytes   = st.session_state.get("pdf_bytes")
 updated_at  = st.session_state.get("updated_at", "—")
 res_month   = st.session_state.get("result_month", month)
+
+if not all_rows:
+    st.stop()
 
 st.divider()
 
